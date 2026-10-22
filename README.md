@@ -56,7 +56,7 @@ DeepL / Microsoft / Google Cloud по ключу и соберёт переве�
 | **SugarCube 2**<br><sub>Twine 2 и Twine 1</sub> | `.html` игры, `.twee`/`.tw`, папку игры или исходников Tweego | ✅ | ✅ | `<игра>_ru_safe.html`<br>`<игра>_ru_full.html` |
 | **Ren'Py**<br><sub>любая версия, в т.ч. только `.rpyc`/`.rpa`</sub> | папку игры, её `.exe` / `.py` / `.sh`, папку распакованного APK | ✅ | ✅<br><sub>Ren'Py 6.99+</sub> | словарь и модуль в `game/` |
 | **Godot 4**<br><sub>Godot 3 и старше — нет</sub> | папку игры, `.exe` / `.x86_64`, `.pck`, папку распакованного APK | ✅ | — | словарь и модуль внутри `.pck` |
-| **Другие HTML/JS-игры**<br><sub>Harlowe, Snowman, Lilith's Throne CE…</sub> | папку игры или её `index.html` | — | ✅ | `index_live.html` |
+| **Другие HTML/JS-игры**<br><sub>Harlowe, Snowman, свой движок…</sub> | папку игры или её `index.html` | — | ✅ | `index_live.html` |
 
 ## Быстрый старт
 
@@ -91,7 +91,7 @@ DeepL / Microsoft / Google Cloud по ключу и соберёт переве�
 > Без `-d` рядом появятся переведённые `demo_ru_safe.twee` и `demo_ru_full.twee`.
 
 > [!NOTE]
-> Если имя файла или папки содержит пробелы — берите его в кавычки: `"Free Cities v 0.10.7.1.html"`.
+> Если имя файла или папки содержит пробелы — берите его в кавычки: `"My Game v 1.0.html"`.
 
 ## Режимы работы
 
@@ -208,7 +208,7 @@ python RUT-v0.16.py "Моя игра.html"                 # обе версии
 python RUT-v0.16.py "Моя игра.html" -m safe         # только безопасная версия
 python RUT-v0.16.py "game.twee"                     # исходник .twee
 python RUT-v0.16.py "C:\Games\src"                  # папка с исходниками Tweego
-python RUT-v0.16.py "Free Cities.html" FC_ru        # своё имя: FC_ru_safe.html и FC_ru_full.html
+python RUT-v0.16.py "My Game.html" MyGame_ru        # своё имя: MyGame_ru_safe.html и MyGame_ru_full.html
 python RUT-v0.16.py "Моя игра.html" -f              # быстрее: одновременно на все адреса Google
 python RUT-v0.16.py "Моя игра.html" --delay 3       # медленнее, но реже блокируют
 ```
@@ -228,7 +228,7 @@ python RUT-v0.16.py "C:\Games\MyVisualNovel" -R           # убрать пер�
 python RUT-v0.16.py "Моя игра.html" -l                    # файл <игра>_live.html, окно скрипта не нужно
 python RUT-v0.16.py "Моя игра.html" -c                    # через окно скрипта, переводы копятся на диске
 python RUT-v0.16.py "C:\Games\MyVisualNovel" -l           # Ren'Py: модуль перевода встраивается в игру
-python RUT-v0.16.py "C:\Games\Liliths_Throne_CE" -l       # игра не на SugarCube
+python RUT-v0.16.py "C:\Games\MyHtmlGame" -l              # HTML-игра не на SugarCube
 python RUT-v0.16.py "Моя игра.html" -i "Моя игра - переводы.json"   # переводы, сохранённые на телефоне
 python RUT-v0.16.py "D:\apk\mygame" -i rut_live.json      # Ren'Py: переводы из папки сохранений
 ```
@@ -276,7 +276,7 @@ python RUT-v0.16.py "Моя игра.html" -e deepl -k КЛЮЧ --max-chars 4500
 | Флаг | Описание |
 |---|---|
 | `input` | игра: `.html`, `.twee`/`.tw`, папка игры, её `.exe`/`.pck` или папка распакованного APK |
-| `output` | своё имя результата: `FC_ru` → `FC_ru_safe.html` и `FC_ru_full.html` |
+| `output` | своё имя результата: `MyGame_ru` → `MyGame_ru_safe.html` и `MyGame_ru_full.html` |
 | `--to ЯЗЫК`, `-ru`, `-uk`, `-de`… | на какой язык переводить (то же: `--dst`, `--lang`). Если не указать — скрипт спросит |
 | `--src ЯЗЫК` | язык оригинала (по умолчанию `en`) |
 | `-C`, `--check` | проверить за пару секунд, какие переводчики сейчас работают |
@@ -311,7 +311,7 @@ python RUT-v0.16.py "Моя игра.html" -e deepl -k КЛЮЧ --max-chars 4500
 | `-D`, `--delay СЕК` | пауза между запросами (по умолчанию 1, в `-l` и `-c` — 0) |
 | `-M`, `--max-chars N` | перевести за запуск не больше N символов — остальное в следующий раз |
 | `-W`, `--max-wait МИН` | сколько минут ждать, если переводчик блокирует (по умолчанию 60) |
-| `-g`, `--glossary ФАЙЛ` | JSON со своими переводами, например `{"Arcology": "Аркология"}` |
+| `-g`, `--glossary ФАЙЛ` | JSON со своими переводами, например `{"Guild": "Гильдия"}` |
 
 </details>
 
@@ -324,9 +324,9 @@ python RUT-v0.16.py "Моя игра.html" -e deepl -k КЛЮЧ --max-chars 4500
 | `--no-gender` | не делать варианты «он/она» |
 | `--gender-default РОД` | род во фразах только с именем: `auto` (по умолчанию), `f`, `m`, `none` |
 | `--gender-vars ФАЙЛ` | JSON с доп. переменными-местоимениями: `{"pn": ["he", "she"]}` |
-| `--no-context` | не подсказывать переводчику соседний текст для коротких обрывков («devoted», «Perky») |
+| `--no-context` | не подсказывать переводчику соседний текст для коротких обрывков («tired», «Sharp») |
 | `--no-is-fix` | не убирать оставшееся английское «is/are/was» в русских фразах (только ru/uk/be) |
-| `--no-lisp` | не сохранять шепелявость (Free Cities: `<<s>>`, `<<ss>>`, `<<c>>`, `<<z>>`) |
+| `--no-lisp` | не сохранять шепелявость персонажей в переводе |
 | `--no-values` | не показывать значения переменных переведёнными (`"white"` → «белый» только на экране) |
 | `--no-ui` | не переводить интерфейс SugarCube |
 | `--no-js` | не трогать JavaScript вообще — только текст пассажей и ссылки |
