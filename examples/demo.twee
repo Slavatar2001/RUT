@@ -1,0 +1,29 @@
+:: StoryTitle
+RUT Demo
+
+:: StoryData
+{
+  "ifid": "D674C58C-DEFA-4F70-B7A2-27742230C0FC",
+  "format": "SugarCube",
+  "format-version": "2.36.1",
+  "start": "Start"
+}
+
+:: StoryInit
+<<set $gold to 3>>
+<<set $He to "she">>
+
+:: Start
+Welcome to the village, traveller! You have <<print $gold>> coins in your pocket.
+An old merchant waves at you. $He smiles and points at the road.
+
+[[Walk into the forest|Forest]]
+[[Visit the market|Market]]
+
+:: Forest
+The forest is dark and quiet. Somewhere far away an owl is hooting.
+<<link "Pick up a shiny coin">><<set $gold += 1>><<goto "Start">><</link>>
+
+:: Market
+<<if $gold gte 5>>You buy a warm loaf of bread.<<else>>You cannot afford anything here yet.<</if>>
+<<button "Go back">><<goto "Start">><</button>>
