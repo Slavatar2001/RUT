@@ -1,0 +1,34 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.8", "3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
+
+      - name: Syntax
+        run: |
+          script=$(ls RUT-v*.py | sort -V | tail -n 1)
+          echo "SCRIPT=$script" >> "$GITHUB_ENV"
+          uv run --no-project --python ${{ matrix.python }} -- python -m py_compile "$script"
+
+      - name: Help
+        run: uv run --no-project --python ${{ matrix.python }} -- python "$SCRIPT" -h > /dev/null
+
+      - name: Dry run on the demo game
+        run: uv run --no-project --python ${{ matrix.python }} -- python "$SCRIPT" examples/demo.twee -ru -d < /dev/null
