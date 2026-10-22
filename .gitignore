@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Результаты перевода (если переводить игры прямо в папке репозитория)
+*_safe.html
+*_full.html
+*_safe.twee
+*_full.twee
+*_live.html
+*.report.tsv
+*.skipped.tsv
+*.structure.txt
+*.cache.json
+*.cache.json.bak
+rut_cache.*.json
+rut_live.json
+*.rut-orig
+*.rut-tmp
+
+# Системные файлы
+.DS_Store
+Thumbs.db
+desktop.ini
