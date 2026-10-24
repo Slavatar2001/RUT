@@ -6,7 +6,7 @@
 SugarCube 2 (Twine) · Ren'Py · Godot 4 · а на лету — любые игры на HTML/JavaScript
 
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-0.16-2ea44f)](RUT-v0.16.py)
+[![Version](https://img.shields.io/badge/version-0.17-2ea44f)](RUT-v0.17.py)
 [![Dependencies](https://img.shields.io/badge/dependencies-requests-informational)](requirements.txt)
 [![Check](https://github.com/Slavatar2001/RUT/actions/workflows/check.yml/badge.svg)](https://github.com/Slavatar2001/RUT/actions/workflows/check.yml)
 <br>
@@ -63,7 +63,7 @@ DeepL / Microsoft / Google Cloud по ключу и соберёт переве�
 1. **Установите Python 3.8 или новее** — [python.org/downloads](https://www.python.org/downloads/).
    В Windows при установке отметьте *Add Python to PATH*.
 
-2. **Скачайте скрипт** — файл [`RUT-v0.16.py`](RUT-v0.16.py) (или весь репозиторий: *Code → Download ZIP*) —
+2. **Скачайте скрипт** — файл [`RUT-v0.17.py`](RUT-v0.17.py) (или весь репозиторий: *Code → Download ZIP*) —
    и установите единственную зависимость:
 
    ```bash
@@ -73,20 +73,20 @@ DeepL / Microsoft / Google Cloud по ключу и соберёт переве�
 3. **Проверьте, что переводчик доступен** (игра для этого не нужна):
 
    ```bash
-   python RUT-v0.16.py --check
+   python RUT-v0.17.py --check
    ```
 
 4. **Переведите игру:**
 
    ```bash
-   python RUT-v0.16.py "C:\Games\Моя игра.html"
+   python RUT-v0.17.py "C:\Games\Моя игра.html"
    ```
 
    Скрипт спросит, на какой язык переводить (Enter — язык прошлого раза), или укажите его сразу:
    `-ru`, `-uk`, `-de`, `--to pt-BR`.
 
 > [!TIP]
-> Попробовать без своей игры: `python RUT-v0.16.py examples/demo.twee -ru -d` — пробный прогон на
+> Попробовать без своей игры: `python RUT-v0.17.py examples/demo.twee -ru -d` — пробный прогон на
 > [маленькой демо-игре](examples/demo.twee) покажет, сколько текста нашлось, ничего не отправляя в переводчик.
 > Без `-d` рядом появятся переведённые `demo_ru_safe.twee` и `demo_ru_full.twee`.
 
@@ -170,6 +170,9 @@ DeepL / Microsoft / Google Cloud по ключу и соберёт переве�
 - Пока вы читаете реплику, следующие строки сценария уже переводятся. Если перевод не успел, реплика ждёт
   до 3 секунд (`-w СЕК`), потом показывается как есть и сама меняется, когда перевод придёт.
 - Меню, настройки и HUD переводятся заранее, пока Ren'Py их готовит.
+- Имена персонажей переводятся как имена, а не как слова: Violet станет «Вайолет», а не «Фиолетовый».
+  Персонажи, которые появляются по ходу игры, тоже переводятся; имя игрока (`[name]`) и «???» остаются как есть.
+- «Обновить» сразу меняет то, что на экране, а остальное — понемногу в фоне: игра не замирает, готовые переводы не сбрасываются.
 - Кнопка с глобусом в углу экрана (на ПК ещё **Alt+L**) открывает панель перевода. В «Ещё…» — угол кнопки,
   скрывать ли её во время игры и инструменты Ren'Py, которые обычно открываются только с клавиатуры:
   выбор рендерера (GL / ANGLE / GLES), меню доступности и консоль. Всё это работает и на телефоне.
@@ -197,48 +200,48 @@ flowchart LR
 **Проверка и оценка объёма**
 
 ```bash
-python RUT-v0.16.py --check                          # работает ли переводчик
-python RUT-v0.16.py "Моя игра.html" -d               # сколько символов переводить, ничего не переводя
+python RUT-v0.17.py --check                          # работает ли переводчик
+python RUT-v0.17.py "Моя игра.html" -d               # сколько символов переводить, ничего не переводя
 ```
 
 **SugarCube**
 
 ```bash
-python RUT-v0.16.py "Моя игра.html"                 # обе версии: safe и full
-python RUT-v0.16.py "Моя игра.html" -m safe         # только безопасная версия
-python RUT-v0.16.py "game.twee"                     # исходник .twee
-python RUT-v0.16.py "C:\Games\src"                  # папка с исходниками Tweego
-python RUT-v0.16.py "My Game.html" MyGame_ru        # своё имя: MyGame_ru_safe.html и MyGame_ru_full.html
-python RUT-v0.16.py "Моя игра.html" -f              # быстрее: одновременно на все адреса Google
-python RUT-v0.16.py "Моя игра.html" --delay 3       # медленнее, но реже блокируют
+python RUT-v0.17.py "Моя игра.html"                 # обе версии: safe и full
+python RUT-v0.17.py "Моя игра.html" -m safe         # только безопасная версия
+python RUT-v0.17.py "game.twee"                     # исходник .twee
+python RUT-v0.17.py "C:\Games\src"                  # папка с исходниками Tweego
+python RUT-v0.17.py "My Game.html" MyGame_ru        # своё имя: MyGame_ru_safe.html и MyGame_ru_full.html
+python RUT-v0.17.py "Моя игра.html" -f              # быстрее: одновременно на все адреса Google
+python RUT-v0.17.py "Моя игра.html" --delay 3       # медленнее, но реже блокируют
 ```
 
 **Ren'Py и Godot 4**
 
 ```bash
-python RUT-v0.16.py "C:\Games\MyVisualNovel"              # папка игры Ren'Py
-python RUT-v0.16.py "C:\Games\MyGodotGame\game.exe" -f    # Godot: .exe (пак рядом или внутри)
-python RUT-v0.16.py "D:\apk\mygame" -uk                   # распакованный APK (apktool d), на украинский
-python RUT-v0.16.py "C:\Games\MyVisualNovel" -R           # убрать перевод, вернуть оригинал
+python RUT-v0.17.py "C:\Games\MyVisualNovel"              # папка игры Ren'Py
+python RUT-v0.17.py "C:\Games\MyGodotGame\game.exe" -f    # Godot: .exe (пак рядом или внутри)
+python RUT-v0.17.py "D:\apk\mygame" -uk                   # распакованный APK (apktool d), на украинский
+python RUT-v0.17.py "C:\Games\MyVisualNovel" -R           # убрать перевод, вернуть оригинал
 ```
 
 **Перевод на лету**
 
 ```bash
-python RUT-v0.16.py "Моя игра.html" -l                    # файл <игра>_live.html, окно скрипта не нужно
-python RUT-v0.16.py "Моя игра.html" -c                    # через окно скрипта, переводы копятся на диске
-python RUT-v0.16.py "C:\Games\MyVisualNovel" -l           # Ren'Py: модуль перевода встраивается в игру
-python RUT-v0.16.py "C:\Games\MyHtmlGame" -l              # HTML-игра не на SugarCube
-python RUT-v0.16.py "Моя игра.html" -i "Моя игра - переводы.json"   # переводы, сохранённые на телефоне
-python RUT-v0.16.py "D:\apk\mygame" -i rut_live.json      # Ren'Py: переводы из папки сохранений
+python RUT-v0.17.py "Моя игра.html" -l                    # файл <игра>_live.html, окно скрипта не нужно
+python RUT-v0.17.py "Моя игра.html" -c                    # через окно скрипта, переводы копятся на диске
+python RUT-v0.17.py "C:\Games\MyVisualNovel" -l           # Ren'Py: модуль перевода встраивается в игру
+python RUT-v0.17.py "C:\Games\MyHtmlGame" -l              # HTML-игра не на SugarCube
+python RUT-v0.17.py "Моя игра.html" -i "Моя игра - переводы.json"   # переводы, сохранённые на телефоне
+python RUT-v0.17.py "D:\apk\mygame" -i rut_live.json      # Ren'Py: переводы из папки сохранений
 ```
 
 **Переводчики по ключу**
 
 ```bash
-python RUT-v0.16.py "Моя игра.html" -e deepl -k КЛЮЧ
-python RUT-v0.16.py "Моя игра.html" -e microsoft -k КЛЮЧ --region westeurope
-python RUT-v0.16.py "Моя игра.html" -e deepl -k КЛЮЧ --max-chars 450000   # не выйти за бесплатный лимит
+python RUT-v0.17.py "Моя игра.html" -e deepl -k КЛЮЧ
+python RUT-v0.17.py "Моя игра.html" -e microsoft -k КЛЮЧ --region westeurope
+python RUT-v0.17.py "Моя игра.html" -e deepl -k КЛЮЧ --max-chars 450000   # не выйти за бесплатный лимит
 ```
 
 ## Переводчики
@@ -268,7 +271,7 @@ python RUT-v0.16.py "Моя игра.html" -e deepl -k КЛЮЧ --max-chars 4500
 
 ## Все флаги
 
-Полная справка — `python RUT-v0.16.py -h`. Короткие флаги пишите отдельно: `-l -f`, а не `-lf`.
+Полная справка — `python RUT-v0.17.py -h`. Короткие флаги пишите отдельно: `-l -f`, а не `-lf`.
 
 <details>
 <summary><b>Основное</b></summary>
@@ -378,7 +381,7 @@ python RUT-v0.16.py "Моя игра.html" -e deepl -k КЛЮЧ --max-chars 4500
 и запустите снова:
 
 ```bash
-python RUT-v0.16.py "Моя игра.html" --keep keep.txt
+python RUT-v0.17.py "Моя игра.html" --keep keep.txt
 ```
 
 Или просто играйте в safe-версию.
@@ -421,7 +424,7 @@ pip install zstandard
 <br>
 
 1. Распакуйте: `apktool d игра.apk`.
-2. Переведите папку: `python RUT-v0.16.py "D:\apk\игра"` (или с `-l` для Ren'Py).
+2. Переведите папку: `python RUT-v0.17.py "D:\apk\игра"` (или с `-l` для Ren'Py).
 3. Соберите и подпишите заново: `apktool b`, затем `uber-apk-signer`.
 
 HTML-игры проще: файл `<игра>_live.html` открывается прямо в браузере телефона или в JoiPlay.
@@ -435,7 +438,7 @@ HTML-игры проще: файл `<игра>_live.html` открывается
 Сохраните структуру кода игры (текст в ней заменён на `T`, так что ничего лишнего не уйдёт):
 
 ```bash
-python RUT-v0.16.py "Моя игра.html" --analyze
+python RUT-v0.17.py "Моя игра.html" --analyze
 ```
 
 и приложите получившийся `<игра>.structure.txt` к [issue](https://github.com/Slavatar2001/RUT/issues/new/choose).
@@ -446,7 +449,8 @@ python RUT-v0.16.py "Моя игра.html" --analyze
 
 ```
 RUT/
-├── RUT-v0.16.py         # весь переводчик — один файл
+├── RUT-v0.17.py         # весь переводчик — один файл
+├── CHANGELOG.md         # что нового в версиях
 ├── requirements.txt     # зависимости: requests (+ zstandard по желанию)
 ├── examples/
 │   └── demo.twee        # маленькая игра SugarCube для пробы

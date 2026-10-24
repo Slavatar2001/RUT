@@ -12,11 +12,11 @@ labels: bug
 
 **Команда**
 ```
-python RUT-v0.16.py ...
+python RUT-v0.17.py ...
 ```
 
 **Версия скрипта, ОС и Python**
-<!-- Например: RUT v0.16, Windows 11, Python 3.12 -->
+<!-- Например: RUT v0.17, Windows 11, Python 3.12 -->
 
 **Вывод скрипта**
 <details><summary>Лог</summary>
@@ -31,5 +31,5 @@ python RUT-v0.16.py ...
 <!--
 Запустите с --analyze и приложите файл <игра>.structure.txt
 (в нём только структура кода, текст игры заменён на T):
-    python RUT-v0.16.py "Моя игра.html" --analyze
+    python RUT-v0.17.py "Моя игра.html" --analyze
 -->
