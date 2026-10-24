@@ -204,6 +204,8 @@ HELP_EXAMPLES = r"""
     которые обычно открываются только с клавиатуры: выбор рендерера (GL / ANGLE / GLES), меню
     доступности (шрифт, размер текста) и консоль (закрыть — кнопкой в углу).
     Если шрифт игры без кириллицы, такой текст показывается шрифтом Ren'Py (DejaVuSans).
+    Имена персонажей переводятся как имена (Mum → Мама, Violet → Вайолет); имя игрока ([name]) не трогается.
+    «Обновить» сразу меняет то, что на экране, остальное — понемногу в фоне (игра не замирает).
     Выученное в игре хранится в папке сохранений игры (rut_live.json) — его можно встроить в игру на ПК
     через -i. Готовый обычный перевод (если игру уже переводили без -l) тоже встраивается, переводится
     только остальное. -c: окно скрипта не закрывать, выход — exit и Enter (или Ctrl+C): всё переведённое
@@ -9498,6 +9500,8 @@ def _rut_live_setup():
     st.pause_order = []
     st.pause_fix = bool(CFG.get("pause_fix", True))
     st.ui_memo = {}
+    st.rq = []
+    st.name_tr = bool(CFG.get("names", True))
     st.fix_list = []
     st.refreshing = False
     st.later = []
@@ -9956,7 +9960,39 @@ def _rut_live_setup():
             except Exception as e:
                 err_once("names", e)
             st.names = out
+            prefetch_names(st.lang)
         return st.names
+
+    NAME_PFX = u"Name: "
+
+    def prefetch_names(lang):
+        if not lang or lang == u"off" or st.names is None or not st.name_tr:
+            return
+        for n in list(st.names):
+            if src_words(n) and u"{" not in n:
+                info = mark(NAME_PFX + n)
+                if info is not None:
+                    lookup(info, lang, True, 2)
+
+    def name_text(s, lang):
+        # a name alone is often a word for the translator (Violet - a colour, Brooke - a stream):
+        # it is translated as "Name: Violet", and the part after the colon is taken
+        if not st.name_tr or not src_words(s) or u"{" in s or len(s) > 40:
+            return None
+        info = mark(NAME_PFX + s)
+        if info is None:
+            return None
+        req, pr = may_ask(s)
+        r = lookup(info, lang, req, 2 if pr is None else pr)[0]
+        if not r:
+            return None
+        m = re.match(u"^[^:\uff1a]{1,30}[:\uff1a]\\s*(.+)$", r.strip())
+        if not m:
+            return None
+        v = m.group(1).strip().strip(u"\"'\u00ab\u00bb\u201c\u201d\u300c\u300d").rstrip(u".\u3002!").strip()
+        if not v or len(v) > 3 * len(s) + 10:
+            return None
+        return v
 
     SCRIPTS = [(u"cyr", 0x0400, 0x052f), (u"greek", 0x0370, 0x03ff), (u"arm", 0x0530, 0x058f),
                (u"heb", 0x0590, 0x05ff), (u"arab", 0x0600, 0x06ff), (u"deva", 0x0900, 0x097f),
@@ -10193,6 +10229,14 @@ def _rut_live_setup():
                 note_src(s)
             if kind and r:
                 remember(kind, lang, s, None, None)
+            return r or None
+        if s in names():
+            r = name_text(s, lang)
+            if st.cur_text is not None:
+                st.touched[id(st.cur_text)] = weakref.ref(st.cur_text)
+            if r:
+                note_out(r)
+                memo[s] = r
             return r or None
         if not wanted(s, lang):
             memo[s] = u""
@@ -10839,6 +10883,15 @@ def _rut_live_setup():
         what = args[0] if args else kwargs.get("what")
         prev = st.cur_what
         st.cur_what = what if (isinstance(what, STR_TS) and what) else None
+        try:
+            n = getattr(self, "name", None)  # characters made during the game ($ a = Character("Ashley"))
+            if isinstance(n, STR_TS) and u"[" not in n and not getattr(self, "dynamic", False):
+                n = u(n)
+                if n not in names():
+                    st.names.add(n)
+                    prefetch_names(st.lang)
+        except Exception as e:
+            err_once("char name", e)
         st.char_depth += 1
         try:
             return orig_call(self, *args, **kwargs)
@@ -11097,18 +11150,58 @@ def _rut_live_setup():
         except Exception as e:
             err_once("refresh", e)
 
+    def visible_texts():
+        out = []
+        TX = R.text.text.Text
+
+        def cb(d):
+            if isinstance(d, TX):
+                out.append(d)
+        try:
+            sl = R.game.context().scene_lists
+            for layer in list(sl.layers.keys()):
+                for sle in sl.layers.get(layer, ()):
+                    try:
+                        sle.displayable.visit_all(cb)
+                    except Exception:
+                        pass
+        except Exception as e:
+            err_once("visible", e)
+        return out
+
     def refresh_everything():
-        st.memo = {}
+        # the text on the screen - at once; the rest (prepared screens, earlier lines) - bit by bit in
+        # the background, a few milliseconds at a time: a game with a big script must not freeze
+        done = set()
+        for t in visible_texts():
+            if id(t) in st.touched and id(t) not in done:
+                done.add(id(t))
+                refresh_text(t)
+        rest = []
         for k, ref in list(st.touched.items()):
-            t = ref()
-            if t is None:
+            if k in done:
+                continue
+            if ref() is None:
                 st.touched.pop(k, None)
                 continue
-            refresh_text(t)
+            rest.append(ref)
+        st.rq = rest
         try:
             E.restart_interaction()
         except Exception:
             pass
+
+    def refresh_some(budget):
+        end = time.time() + budget
+        while st.rq and time.time() < end:
+            t = st.rq.pop()()
+            if t is not None:
+                refresh_text(t)
+        if not st.rq:
+            try:
+                E.restart_interaction()
+            except Exception:
+                pass
 
     def periodic():
         try:
@@ -11131,6 +11224,8 @@ def _rut_live_setup():
             if st.refresh_all:
                 st.refresh_all = False
                 refresh_everything()
+            elif st.rq:
+                refresh_some(0.006)
             if len(st.touched) > 3000:
                 for k, ref in list(st.touched.items()):
                     if ref() is None:
@@ -11381,6 +11476,7 @@ def _rut_live_setup():
         st.off = False
         st.page = 0
         st.panel = "main"
+        prefetch_names(code)
         refresh_everything()
 
     def show_translation():
@@ -11395,7 +11491,6 @@ def _rut_live_setup():
             ep["until"] = 0.0
         if not st.server:
             start_probe()
-        st.memo = {}
         refresh_everything()
         say(ui_t("retry_done", u"Trying again"))
 
