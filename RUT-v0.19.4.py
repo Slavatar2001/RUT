@@ -54,6 +54,11 @@ import tempfile
 import threading
 import time
 
+# имя файла скрипта — для подсказок вида «python RUT.py …» (файл могли переименовать)
+PROG = (os.path.basename(sys.argv[0]) if sys.argv and sys.argv[0].lower().endswith(".py")
+        else "sugarcube_translate.py")
+PROG_CMD = PROG if re.fullmatch(r"[\w.+-]+", PROG) else f'"{PROG}"'  # «RUT (1).py» — в кавычках
+
 HELP_INTRO = """
 Машинный перевод игр через Google Translate (по умолчанию — на русский): SugarCube 2 (Twine), Ren'Py,
 Godot 4 и (на лету) любые игры на HTML/JavaScript. Движок скрипт определяет сам.
@@ -194,18 +199,24 @@ HELP_EXAMPLES = r"""
     перевод не успел, реплика ждёт до 3 секунд (-w СЕК), потом показывается как есть и меняется сама,
     когда перевод придёт (реплика с паузами {w}/{p} тогда показывается целиком, без пауз, — иначе её
     нельзя было бы заменить). Меню, настройки и HUD игры переводятся заранее, пока Ren'Py их готовит.
-    В углу экрана — кнопка с глобусом (код языка) и рядом «⟳» (обновить: повторить то, что не перевелось из-за
+    В правом нижнем углу — кнопка с глобусом (код языка) и рядом «⟳» (обновить: повторить то, что не перевелось из-за
     связи; оранжевая, если были сбои). Глобус (на ПК ещё Alt+L) открывает панель: язык (первый в списке —
     оригинал игры) и «Обновить», «Показать оригинал» (Alt+T), «Перевести заново» и «Исправить фразу»
     (список того, что сейчас на экране, и последних реплик). Панель говорит на языке, который на экране:
     при оригинале — на языке игры. Язык при первом запуске — как у телефона / Windows (если это язык
-    оригинала или его не узнать — игра начинается в оригинале), выбранный в игре запоминается. В «Ещё…»: сохранить переводы в файл, угол кнопки, скрывать ли её во
-    время игры (в меню игры она есть всегда — так её можно вернуть без клавиатуры) и инструменты Ren'Py,
+    оригинала или его не узнать — игра начинается в оригинале), выбранный в игре запоминается.
+    В «Ещё…»: сохранить переводы в файл, угол кнопки, скрывать ли её во время игры (в меню игры она есть
+    всегда — так её можно вернуть без клавиатуры), прозрачность фона панели (ползунок),
+    «Перезагрузить сцену» (чёрный экран или сцена не идёт дальше: игра сохраняется и сразу загружается —
+    то же, что вручную) и инструменты Ren'Py,
     которые обычно открываются только с клавиатуры: выбор рендерера (GL / ANGLE / GLES), меню
     доступности (шрифт, размер текста) и консоль (закрыть — кнопкой в углу).
     Если шрифт игры без кириллицы, такой текст показывается шрифтом Ren'Py (DejaVuSans).
     Имена персонажей переводятся как имена (Mum → Мама, Violet → Вайолет); имя игрока ([name]) не трогается.
     «Обновить» сразу меняет то, что на экране, остальное — понемногу в фоне (игра не замирает).
+    Если в углу кнопки самой игры (быстрое меню), кнопка перевода встаёт рядом, а не поверх них.
+    Повтор «устали и устали» (Google склеил два разных слова оригинала) убирается; фраза, которую Google
+    вернул без перевода, переспрашивается отдельно.
     Выученное в игре хранится в папке сохранений игры (rut_live.json) — его можно встроить в игру на ПК
     через -i. Готовый обычный перевод (если игру уже переводили без -l) тоже встраивается, переводится
     только остальное. -c: окно скрипта не закрывать, выход — exit и Enter (или Ctrl+C): всё переведённое
@@ -299,6 +310,7 @@ KEY_MACROS = set(("goto include display widget audio cacheaudio createaudiogroup
                   "capture stop next break continue done").split())
 
 SKIP_TAGS = {"stylesheet", "Twine.image", "Twine.audio", "Twine.video", "Twine.vtt"}
+MEDIA_TAGS = SKIP_TAGS - {"stylesheet"}  # картинки/звук, вшитые в пассажи (Tweego): мегабайты base64, не текст
 SKIP_NAMES = {"StoryData", "StoryTitle", "StoryIncludes"}
 
 # ===========================================================================
@@ -419,6 +431,8 @@ PROTECT = re.compile(
     r"|(?P<tag></?[A-Za-z!][^<>]*>)"
     r"|(?P<style>@@(?:[^;@\n<>]{0,80};)*)"
     r"|(?P<var>(?<![\w$])(?:\$[A-Za-z_$][\w$]*|_[A-Za-z$][\w$]*)(?:\.[A-Za-z_$][\w$]*|\[[^\]\n]*\])*)"
+    # подстановки шаблонов игры: "a {COLOR} wig" — игра сама меняет {COLOR} на цвет, переводить нельзя
+    r"|(?P<tpl>\{[A-Za-z_][\w.]{0,30}\}|\{\d{1,2}\}|%[A-Z][A-Z0-9_]{1,30}%)"
     r"|(?P<fmt>''|//|__|==|\^\^|~~)"
     r"|(?P<entity>&(?:#\d+|#x[0-9A-Fa-f]+|[A-Za-z]+);)"
     r"|(?P<linestart>^(?:!{1,6}|[*#]+(?=\s)|>+))"
@@ -732,8 +746,11 @@ class PrintWrap:
 
     def render(self):
         head, inner, tail = self.p[0], self.p[1].render(), self.p[2]
-        if VALUES["on"] and inner.strip():
-            return f"{head} ruT(({inner.strip()})){tail}"
+        expr = inner.strip()
+        while expr.endswith(";"):  # <<print setup.player.Day; >> — точка с запятой в скобках ruT((…)) была бы ошибкой
+            expr = expr[:-1].rstrip()
+        if VALUES["on"] and expr and ";" not in expr:
+            return f"{head} ruT(({expr})){tail}"
         return head + inner + tail
 
     def parts(self):
@@ -919,7 +936,7 @@ def split_ws(s):
     return s[:a], s[a:b], s[b:]
 
 
-EDGE_KEEP = {"var", "entity", "fmt", "expr"}
+EDGE_KEEP = {"var", "entity", "fmt", "expr", "tpl"}
 
 
 def split_line(line):
@@ -1015,6 +1032,96 @@ def fix_stutter(t, src=None):
         parts = m.group(1).split("-")[:-1]
         return "".join((first.upper() if p.isupper() else first.lower()) + "-" for p in parts) + first
     return STUTTER_TR.sub(rep, t)
+
+
+# «Устали и устали»: переводчик склеивает два разных слова оригинала в одно («done and exhausted»).
+# Союзы «и / или» по языкам; слова, которые и правда повторяют («снова и снова», «ну и ну»), не трогаем.
+DOUBLES = {
+    "conj": {"en": "and|or", "ru": "и|или", "uk": "і|й|та|або", "be": "і|ды|або", "bg": "и|или", "sr": "и|или",
+             "mk": "и|или", "pl": "i|oraz|lub|albo", "cs": "a|i|nebo", "sk": "a|i|alebo", "de": "und|oder",
+             "nl": "en|of", "fr": "et|ou", "es": "y|e|o|u", "it": "e|ed|o", "pt": "e|ou", "ro": "și|şi|sau",
+             "tr": "ve|veya", "hu": "és|vagy", "sv": "och|eller", "da": "og|eller", "no": "og|eller",
+             "fi": "ja|tai", "id": "dan|atau", "ms": "dan|atau", "vi": "và|hoặc", "el": "και|ή", "lt": "ir|ar",
+             "lv": "un|vai", "et": "ja|või", "hr": "i|ili", "bs": "i|ili", "sl": "in|ali", "kk": "және|немесе",
+             "ca": "i|o", "gl": "e|ou", "af": "en|of", "tl": "at|o"},
+    "keep": ["ну", "снова", "ещё", "еще", "опять", "вновь", "так", "раз", "всё", "все", "туда", "знову", "ще",
+             "знов", "again", "more", "over", "on", "round", "encore", "immer", "mehr", "más", "sempre", "ancora",
+             "mais", "meer", "steeds", "coraz", "znowu", "jeszcze", "pořád", "daha", "toujours"],
+    # для подсчёта пар «A и B» — ещё и «а / но» («warm and fuzzy, and he…» → «тепло, а он…»)
+    "pairs": {"en": "and|or|but", "ru": "и|или|а|но", "uk": "і|й|та|або|а|але", "be": "і|ды|або|а|але",
+              "de": "und|oder|aber", "fr": "et|ou|mais", "es": "y|e|o|u|pero", "it": "e|ed|o|ma",
+              "pt": "e|ou|mas", "pl": "i|oraz|lub|albo|a|ale"},
+    # сравнительная степень по языку перевода: «больше и больше», «bigger and bigger»
+    "cmp": {"ru": "(?:ее|ей|ше|же|че|ще)$", "uk": "(?:ше|іше|ще|же)$", "be": "(?:ей|ш[аэ]|ейш)$",
+            "en": "er$", "de": "er$", "nl": "er$"},
+}
+_DBL_RE = {}
+
+
+def _dbl_conj(lang, table="conj"):
+    l = (lang or "").split("-")[0].lower()
+    return DOUBLES[table].get(l) or (DOUBLES["conj"].get(l) if table != "conj" else None)
+
+
+def _dbl_rx(sl, tl):
+    key = (sl, tl)
+    if key not in _DBL_RE:
+        tc, sc = _dbl_conj(tl), _dbl_conj(sl)
+        rx = None
+        if tc and sc:
+            w = r"[^\W\d_]+"
+            cmp_ = DOUBLES["cmp"].get((tl or "").split("-")[0].lower())
+            rx = {"tgt": re.compile(r"(?<![\w-])((?:%s )?(?:%s )?%s),? (?:%s) \1(?![\w-])" % (w, w, w, tc), re.I),
+                  "rep": re.compile(r"(?<![\w-])(%s)(?:,? (?:\w{1,4} )?|-)\1(?![\w-])" % w, re.I),
+                  # пары «A и B» с разными словами (с наложением: «A и B и C» — две пары)
+                  "src": re.compile(r"(?<![\w-])(?=((%s),? (?:%s) (%s))(?![\w-]))" % (w, _dbl_conj(sl, "pairs"), w),
+                                    re.I),
+                  "pair": re.compile(r"(?<![\w-])(?=((%s),? (?:%s) (%s))(?![\w-]))" % (w, _dbl_conj(tl, "pairs"), w),
+                                     re.I),
+                  "cmp": re.compile(cmp_) if cmp_ else None, "keep": set(DOUBLES["keep"]),
+                  "conj": [" %s " % c for c in tc.split("|")]}
+        _DBL_RE[key] = rx
+    return _DBL_RE[key]
+
+
+def fix_doubles(src, res, sl, tl):
+    """«Через два часа вы устали и устали» → «вы устали»: одно и то же слово через «и/или», хотя
+    в оригинале там два разных («done and exhausted»). Убираем, только если в переводе пропала пара
+    разных слов оригинала: пар «A и B» в оригинале больше, чем в переводе. Повторы из оригинала
+    («again and again»), «шёл и шёл» при другой паре слов в той же фразе, неизвестный язык оригинала —
+    не трогаем."""
+    if not res or not src:
+        return res
+    rx = _dbl_rx(sl, tl)
+    if rx is None:
+        return res
+    low = res.lower()
+    if not any(c in low for c in rx["conj"]):
+        return res
+    spans = [m.span() for m in rx["tgt"].finditer(res)]
+    if not spans:
+        return res
+    plain = PH_IN.sub(" ", src)
+    if rx["rep"].search(plain):
+        return res  # в оригинале и так повтор («more and more», «side by side»)
+    n_src = sum(1 for m in rx["src"].finditer(plain) if m.group(2).lower() != m.group(3).lower())
+    n_tgt = 0
+    for m in rx["pair"].finditer(res):
+        a, b = m.start(), m.start() + len(m.group(1))
+        if m.group(2).lower() != m.group(3).lower() and not any(s0 <= a and b <= e for s0, e in spans):
+            n_tgt += 1
+    left = [n_src - n_tgt]
+    if left[0] <= 0:
+        return res
+
+    def one(m):
+        x = m.group(1)
+        last = x.split()[-1].lower()
+        if left[0] <= 0 or last in rx["keep"] or (rx["cmp"] and rx["cmp"].search(last)) or len(x) < 3:
+            return m.group(0)
+        left[0] -= 1
+        return x
+    return rx["tgt"].sub(one, res)
 
 
 NO_COPULA_LANGS = {"ru", "uk", "be"}   # языки, где «is/are» в настоящем времени не переводится
@@ -1690,8 +1797,10 @@ def lisp_parts(parts):
     return out
 
 
-ASSIGN_RE = re.compile(r"([$_A-Za-z][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]\n]{0,40}\])*)\s*(?:=(?![=>])|\bto\b|:)\s*"
-                       r"([\"'])((?:\\.|(?!\2)[^\\\n]){2,60})\2")
+# имя переменной — с начала слова и не длиннее 60 знаков: в JS бывают строки base64 по 40 тысяч букв подряд
+# (source map вебпака), и без этого поиск идёт часами
+ASSIGN_RE = re.compile(r"(?<![\w$])([$_A-Za-z][\w$]{0,60}(?:\.[A-Za-z_$][\w$]{0,60}|\[[^\]\n]{0,40}\]){0,8})\s*"
+                       r"(?:=(?![=>])|\bto\b|:)\s*([\"'])((?:\\.|(?!\2)[^\\\n]){2,60})\2")
 LISP_SCAN = {"widgets": set(), "pairs": {}}
 
 
@@ -1707,7 +1816,7 @@ def scan_lisp(passages):
     которые игра присваивает одной и той же переменной: $titleEnunciate = "Mathter" / "Master"."""
     widgets, props = set(), {}
     for p in passages:
-        if "stylesheet" in p["tags"]:
+        if p["tags"] & SKIP_TAGS:
             continue
         body = p["body"]
         widgets.update(re.findall(r"<<widget\s+[\"']([A-Za-z]{1,2})[\"']", body))
@@ -3019,8 +3128,64 @@ SAME_MARK = "\u0001same\u0001"  # в кэше: фраза проверена п�
 CYRILLIC_LANGS = {"ru", "uk", "be", "bg", "sr", "mk", "kk", "ky", "tg", "mn"}
 
 
+_LATW = re.compile(r"[A-Za-z][A-Za-z']+")
+_NONLAT_RUN = re.compile(r"[^\W\d_A-Za-z\u00c0-\u024f]+")  # буквы другой письменности (кириллица…)
+_HTML_BITS = re.compile(r"</?[A-Za-z][^<>]{0,300}>|&#?\w{1,10};")  # теги и &nbsp; — не слова фразы
+_SENT_SPLIT = re.compile(r"(?<=[.!?\u2026])(\s+)(?=\S)")  # между предложениями
+
+
+_TITLE_SMALL = frozenset("the and for nor but yet with from into onto upon over off out per via von van der des del los las".split())
+_INTERJ = frozenset("hmm huh ugh ahh ohh uhh umm shh ooh aah argh heh hah haha hehe ouch wow eek gah pfft tsk psst "
+                    "whoa yay yikes hmph mhm ahem phew meh aww eww".split())
+_INTERJ_RE = re.compile(r"(.)\1\1")  # «ahhh», «mmm», «nooo» — междометия, Google часто оставляет их как есть
+
+
+def _plain_run(ws):
+    """Подряд идущие английские слова считаются непереведёнными, только если это похоже на предложение:
+    имена и названия («Call of Duty», «The Lord of the Rings») пишут с заглавных, строчными там только
+    служебные слова, — такие оставляют нарочно. В предложении есть хотя бы два обычных слова строчными
+    (или всё заглавными: крик); междометия («ahhh», «hmm») не в счёт."""
+    return len(ws) >= 3 and sum(1 for w in ws if len(w) >= 3 and (w.islower() or w.isupper())
+                                and w.lower() not in _TITLE_SMALL and w.lower() not in _INTERJ
+                                and not _INTERJ_RE.search(w.lower())) >= 2
+
+
+def leftover_words(src, res):
+    """Сколько слов оригинала осталось в переводе как есть: Google иногда оставляет по-английски
+    предложение из длинной фразы («Тьфу… Продолжай пускать слюни. But if you want another round…»).
+    Перевод другой письменностью — подряд идущие (от 3) слова оригинала; латиницей — самый длинный
+    отрезок тех же слов в том же порядке (от 5). Возвращает (сколько осталось, сколько слов в оригинале)."""
+    so = _LATW.findall(_HTML_BITS.sub(" ", PH_IN.sub(" ", src)))
+    sw = [w.lower() for w in so]
+    if len(sw) < 4:
+        return 0, len(sw)
+    rp = _HTML_BITS.sub(" ", PH_IN.sub(" ", res))
+    sset = set(sw)
+    if _NONLAT_RUN.search(rp):
+        n = 0
+        for seg in _NONLAT_RUN.split(rp):
+            ws = [w for w in _LATW.findall(seg) if w.lower() in sset]
+            if _plain_run(ws):
+                n += len(ws)
+        return n, len(sw)
+    rw = [w.lower() for w in _LATW.findall(rp)]
+    if sum(1 for w in rw if w in sset) < 5:
+        return 0, len(sw)  # меньше 5 общих слов — отрезка из 5 нет (быстро: кэш бывает большим)
+    best, end, prev = 0, 0, [0] * (len(rw) + 1)
+    for i, a in enumerate(sw):
+        cur = [0] * (len(rw) + 1)
+        for j, b in enumerate(rw):
+            if a == b:
+                cur[j + 1] = prev[j] + 1
+                if cur[j + 1] > best:
+                    best, end = cur[j + 1], i + 1
+        prev = cur
+    return (best if best >= 5 and _plain_run(so[end - best:end]) else 0), len(sw)
+
+
 def untranslated(src, res, dst):
-    """Переводчик вернул фразу без перевода (бывает, когда в пачке много коротких фраз с кодом)."""
+    """Переводчик вернул фразу без перевода (бывает, когда в пачке много коротких фраз с кодом)
+    или перевёл только часть (одно предложение по-русски, следующее по-английски)."""
     if res is None:
         return True
     plain = PH_IN.sub(" ", src)
@@ -3030,8 +3195,23 @@ def untranslated(src, res, dst):
     if res.strip() == src.strip():
         return True
     if dst.split("-")[0].lower() in CYRILLIC_LANGS and len(words) >= 2:
-        return not re.search(r"[А-Яа-яЁёІіЇїЄєЎў]", PH_IN.sub(" ", res))
-    return False
+        if not re.search(r"[А-Яа-яЁёІіЇїЄєЎў]", PH_IN.sub(" ", res)):
+            return True
+    return part_left(src, res)
+
+
+def part_left(src, res):
+    """Переведена только часть: от 3 слов оригинала подряд — пятая часть фразы или целое предложение (от 5 слов)."""
+    if not isinstance(res, str) or res.strip() == src.strip():
+        return False
+    n, total = leftover_words(src, res)
+    return n >= 3 and (n * 5 >= total or n >= 5)
+
+
+def same_sentences(src, res):
+    """Вся фраза — предложения, не имя и не название — вернулась без перевода: стоит попробовать по
+    предложениям."""
+    return isinstance(res, str) and res.strip() == src.strip() and leftover_words(src, src)[0] > 0
 
 
 def complexity(s):
@@ -3064,11 +3244,22 @@ class Translator:
         if os.path.exists(cache_path):
             with open(cache_path, encoding="utf-8") as f:
                 self.cache = json.load(f)
+            man = self.cache.get(LIVE_MANUAL)
+            man = man if isinstance(man, dict) else {}  # исправленное вручную в игре не трогаем
+            # без перевода (или наполовину) — переведём заново; то, что и по одной не переводится (имена,
+            # названия), помечено SAME_MARK; переведённые наполовину — всегда заново (их помечала v0.19.2)
             bad = [k for k, v in self.cache.items() if not k.startswith("\u0001") and isinstance(v, str)
-                   and SAME_MARK + k not in self.cache and untranslated(k, v, dst)]
+                   and k not in man and untranslated(k, v, dst)
+                   and (SAME_MARK + k not in self.cache or part_left(k, v))]
             for k in bad:
                 del self.cache[k]
+                self.cache.pop(SAME_MARK + k, None)
             self.redo = len(bad)
+            for k, v in list(self.cache.items()):  # «устали и устали» из старого кэша (до v0.18)
+                if isinstance(v, str) and not k.startswith("\u0001") and k not in man:
+                    v2 = fix_doubles(k, v, src, dst)
+                    if v2 != v:
+                        self.cache[k] = v2
         else:
             self.redo = 0
         meta = self.cache.get(META_KEY)
@@ -3454,28 +3645,80 @@ class Translator:
         return [x["translations"][0]["text"] for x in data]
 
     def translate_batch(self, texts):
-        return {"free": self._free_batch, "google": self._free_batch, "google-cloud": self._google_cloud_batch,
-                "deepl": self._deepl_batch, "microsoft": self._microsoft_batch}[self.engine](texts)
+        res = {"free": self._free_batch, "google": self._free_batch, "google-cloud": self._google_cloud_batch,
+               "deepl": self._deepl_batch, "microsoft": self._microsoft_batch}[self.engine](texts)
+        return [fix_doubles(t, r, self.src, self.dst) if isinstance(r, str) else r for t, r in zip(texts, res)]
 
     # --- пакетный перевод с прогрессом ---
     def _store(self, batch, results):
-        """Сохраняет переводы; фразы, вернувшиеся без перевода, переводит заново по одной."""
+        """Сохраняет переводы. Фразы, вернувшиеся без перевода, переводит заново по одной; переведённые
+        наполовину (предложение осталось по-английски) — ещё и по предложениям. Остаётся лучший вариант."""
         retry = []
         with self.lock:
             for src, res in zip(batch, results):
-                if untranslated(src, res, self.dst) and len(batch) > 1:
-                    retry.append(src)
+                if untranslated(src, res, self.dst) and (len(batch) > 1 or part_left(src, res)
+                                                         or same_sentences(src, res)):
+                    retry.append((src, res, len(batch) == 1))
                 else:
-                    self.cache[src] = res if res is not None else src
-                    if untranslated(src, res, self.dst):
-                        self.cache[SAME_MARK + src] = "1"
-        for src in retry:
-            res = self.translate_batch([src])[0]
+                    self._keep(src, res if res is not None else src)
+        for src, best, alone in retry:
+            failed = False
+            if not alone:
+                res = self.translate_batch([src])[0]
+                if self._worse(src, res) < self._worse(src, best):
+                    best = res
+            # по предложениям, каждое отдельным запросом (если их много — одной пачкой): если по-английски
+            # осталась часть (или вся фраза)
+            bits = _SENT_SPLIT.split(src) if part_left(src, best) or same_sentences(src, best) else []
+            if len(bits) >= 3:  # предложения и пробелы (переводы строк) между ними
+                try:
+                    parts = bits[0::2]
+                    got = ([self.translate_batch([p])[0] for p in parts] if len(parts) <= 6
+                           else self.translate_batch(parts))
+                    got = got if len(got) == len(parts) else []
+                    if got and all(isinstance(g, str) and g.strip() for g in got):
+                        cj = self.dst.split("-")[0].lower() in ("zh", "ja")  # предложения пишут без пробела
+                        res = got[0] + "".join(("" if cj and not sp.strip(" ") else sp) + g
+                                               for sp, g in zip(bits[1::2], got[1:]))
+                        if self._worse(src, res) < self._worse(src, best):
+                            best = res
+                except (Halted, RateLimited, QuotaExceeded):
+                    raise
+                except Exception:  # noqa: BLE001 — не вышло сейчас: попробуем в другой раз
+                    failed = True
             with self.lock:
-                self.cache[src] = res
-                if untranslated(src, res, self.dst):
-                    self.cache[SAME_MARK + src] = "1"  # и по одной не переводится — значит так и есть
+                self._keep(src, best if isinstance(best, str) and best.strip() else src, failed)
                 self.retried = getattr(self, "retried", 0) + 1
+
+    def _keep(self, src, res, failed=False):
+        """Запоминает перевод. Вернулось без перевода и по одной — «так и есть» (имя, название; то, что
+        Google не переводит): заново не переводим. Переведённую наполовину фразу переспросим при следующем
+        запуске: сбой Google мог быть временным."""
+        self.cache[src] = res
+        if untranslated(src, res, self.dst) and not failed and not part_left(src, res):
+            self.cache[SAME_MARK + src] = "1"
+        else:
+            self.cache.pop(SAME_MARK + src, None)
+
+    def _worse(self, src, res):
+        """Насколько плох перевод: 0 — хорош; без перевода хуже, чем с частью по-английски. Потерянная
+        метка ⟦n⟧ — меньшее зло: такую фразу игра ещё переспросит, а «без перевода» запоминается."""
+        if not isinstance(res, str) or not res.strip():
+            return 10 ** 7
+        if res.strip() == src.strip():
+            base = 10 ** 5
+        elif not untranslated(src, res, self.dst):
+            base = 0
+        elif part_left(src, res):
+            base = leftover_words(src, res)[0]
+        else:
+            base = 10 ** 4  # другой письменности в переводе нет совсем
+        return base * 2 + (sorted(PH_IN.findall(src)) != sorted(PH_IN.findall(res)))
+
+    def put_alone(self, src, res):
+        """Перевод фразы, запрошенной отдельно (см. _keep)."""
+        with self.lock:
+            self._keep(src, res)
 
     def _sleep(self, sec):
         """Пауза. В рабочих потоках её можно прервать (Ctrl+C или остановка) — поток сразу выходит."""
@@ -3621,6 +3864,24 @@ class Translator:
 
 
 # ===========================================================================
+FIT_MENU_JS = r'''	/* переведённые пункты меню длиннее английских: если в теме игры они узкие (в ряд), шрифт чуть меньше */
+	function fitMenu() {
+		try {
+			Array.prototype.forEach.call(document.querySelectorAll("#menu li a"), function (a) {
+				a.style.transition = "none";  // у ссылок SugarCube плавный переход 0.2 с: размер иначе меняется не сразу
+				a.style.fontSize = ""; a.style.whiteSpace = "";
+				if (a.clientWidth >= 20) {  // панель не скрыта
+					var fs = parseFloat(getComputedStyle(a).fontSize) || 13, min = Math.max(8, fs * 0.65);
+					a.style.whiteSpace = "nowrap";
+					while (a.scrollWidth > a.clientWidth + 1 && fs > min) { fs -= 0.5; a.style.fontSize = fs + "px"; }
+					if (a.scrollWidth > a.clientWidth + 1) { a.style.whiteSpace = ""; a.style.fontSize = ""; }  // и мелким не влезает — перенос строки, шрифт прежний
+				}
+				a.style.transition = "";
+			});
+		} catch (e) { /* ничего страшного */ }
+	}
+'''
+
 # Интерфейс SugarCube на русском (l10nStrings) — свои переводы
 # ===========================================================================
 
@@ -3859,8 +4120,10 @@ def prelude_js(gender, ui, values=None, ui_map=None, lisp=False, copula=False):
                      "\t\tObject.keys(m).forEach(function (id) {\n"
                      "\t\t\tvar a = document.querySelector(\"#\" + id + \" a\");\n"
                      "\t\t\tif (a) { a.textContent = ru[m[id]]; }\n"
-                     "\t\t});\n\t};\n"
-                     "\ttry { fix(); if (typeof jQuery !== \"undefined\") { jQuery(document).one(\":passagestart\", fix); } } "
+                     "\t\t});\n\t\tfitMenu();\n\t};\n" + FIT_MENU_JS
+                     + "\ttry { fix(); if (typeof jQuery !== \"undefined\") { jQuery(document).one(\":passagestart\", fix); } "
+                     "window.addEventListener(\"resize\", fitMenu); "
+                     "jQuery(document).on(\":passagedisplay\", function () { fitMenu(); setTimeout(fitMenu, 400); }); } "
                      "catch (e) { /* ничего страшного */ }\n})();")
     if gender:
         parts.append(ru_gender_helper().rstrip("\n"))
@@ -4293,7 +4556,7 @@ def resolve_input(path):
                 break
             print(f"Введите номер от 1 до {len(shown)}.", file=sys.stderr)
     else:
-        print("Беру первый. Другой можно указать сразу: python sugarcube_translate.py \"путь/к/файлу.html\"",
+        print(f"Беру первый. Другой можно указать сразу: python {PROG_CMD} \"путь/к/файлу.html\"",
               file=sys.stderr)
     print(f"Файл игры: {shown[n - 1]}", file=sys.stderr)
     return shown[n - 1]
@@ -4324,7 +4587,7 @@ def find_game_html(folder):
                               -os.path.getsize(f)))
     if len(found) > 1:
         print("Нашёл несколько файлов игры, беру первый:\n  " + "\n  ".join(found)
-              + "\nДругой можно указать напрямую: python sugarcube_translate.py \"путь\\к\\файлу.html\"",
+              + f"\nДругой можно указать напрямую: python {PROG_CMD} \"путь\\к\\файлу.html\"",
               file=sys.stderr)
     return found[0]
 
@@ -4384,12 +4647,14 @@ PRON_ASSIGN = re.compile(
 def harvest(passages):
     found = {}
     scan_macro_roles(passages)
-    allbody = [p["body"] for p in passages if "script" not in p["tags"]]
+    allbody = [p["body"] for p in passages if "script" not in p["tags"] and not p["tags"] & MEDIA_TAGS]
     n_endif = sum(b.count("<<endif>>") for b in allbody)
     n_close = sum(b.count("<</if>>") for b in allbody)
     STYLE["endif"] = n_endif > 0 and n_close == 0
     for p in passages:
         PASSAGES.add(p["name"])
+        if p["tags"] & MEDIA_TAGS:
+            continue
         body = p["body"]
         if "stylesheet" in p["tags"]:
             css = re.sub(r"url\([^)]*\)", "", body)
@@ -5552,6 +5817,60 @@ LIVE_JS = r'''/* === sugarcube_translate: перевод на лету (-l / --l
 			return pre + parts.map(function (p) { return (p === p.toUpperCase() ? first.toUpperCase() : first.toLowerCase()) + "-"; }).join("") + first;
 		});
 	}
+	var DBL = C.dbl || null, DBL_C = Object.create(null);
+	function dblRes(lang) {  // «устали и устали»: см. fix_doubles в скрипте
+		var key = lang + "|" + SRC;
+		if (DBL_C[key] !== undefined) { return DBL_C[key]; }
+		var r = null;
+		try {
+			var b = function (l) { return String(l || "").split("-")[0].toLowerCase(); };
+			var conj = function (l, t) { return (DBL[t] && DBL[t][b(l)]) || DBL.conj[b(l)]; };
+			var tc = DBL.conj[b(lang)], sc = DBL.conj[b(SRC)], w = "\\p{L}+", nb = "[\\p{L}\\p{N}_-]";
+			var cm = DBL.cmp && DBL.cmp[b(lang)];
+			if (tc && sc) {
+				r = { tgt: new RegExp("(?<!" + nb + ")((?:" + w + " )?(?:" + w + " )?" + w + "),? (?:" + tc + ") \\1(?!" + nb + ")", "giu"),
+					rep: new RegExp("(?<!" + nb + ")(" + w + ")(?:,? (?:[\\p{L}\\p{N}_]{1,4} )?|-)\\1(?!" + nb + ")", "iu"),
+					src: new RegExp("(?<!" + nb + ")(?=((" + w + "),? (?:" + conj(SRC, "pairs") + ") (" + w + "))(?!" + nb + "))", "giu"),
+					pair: new RegExp("(?<!" + nb + ")(?=((" + w + "),? (?:" + conj(lang, "pairs") + ") (" + w + "))(?!" + nb + "))", "giu"),
+					cmp: cm ? new RegExp(cm, "u") : null,
+					conj: tc.split("|").map(function (c) { return " " + c + " "; }) };
+			}
+		} catch (e) { r = null; }  // старый браузер без \p{L} или (?<!)
+		DBL_C[key] = r;
+		return r;
+	}
+	function dblPairs(re, s, spans) {  // пары «A и B» с разными словами (с наложением), кроме тех, что внутри повтора
+		var n = 0, m;
+		re.lastIndex = 0;
+		while ((m = re.exec(s))) {
+			var a = m.index, e = a + m[1].length;
+			if (m[2].toLowerCase() !== m[3].toLowerCase() && !spans.some(function (sp) { return sp[0] <= a && e <= sp[1]; })) { n++; }
+			re.lastIndex = m.index + 1;  // совпадение нулевой длины: дальше на один символ
+		}
+		return n;
+	}
+	function fixDoubles(src, res, lang) {
+		if (!DBL || typeof res !== "string" || typeof src !== "string" || !res || !src) { return res; }
+		var R = dblRes(lang);
+		if (!R) { return res; }
+		var low = res.toLowerCase();
+		if (!R.conj.some(function (c) { return low.indexOf(c) >= 0; })) { return res; }
+		var spans = [], m;
+		R.tgt.lastIndex = 0;
+		while ((m = R.tgt.exec(res))) { spans.push([m.index, m.index + m[0].length]); }
+		if (!spans.length) { return res; }
+		var plain = src.replace(/⟦\s*\d+\s*⟧/g, " ");
+		if (R.rep.test(plain)) { return res; }  // повтор есть в оригинале («again and again»)
+		var left = dblPairs(R.src, plain, []) - dblPairs(R.pair, res, spans);
+		if (left <= 0) { return res; }
+		R.tgt.lastIndex = 0;
+		return res.replace(R.tgt, function (all, x) {
+			var last = x.split(" ").pop().toLowerCase();
+			if (left <= 0 || DBL.keep.indexOf(last) >= 0 || (R.cmp && R.cmp.test(last)) || x.length < 3) { return all; }
+			left--;
+			return x;
+		});
+	}
 	function build(toks, st, made) {
 		var root = { kids: [] }, stack = [root];
 		for (var k = 0; k < toks.length; k++) {
@@ -5968,7 +6287,7 @@ LIVE_JS = r'''/* === sugarcube_translate: перевод на лету (-l / --l
 			inflight--;
 			var M = MEMS[lang] || (MEMS[lang] = Object.create(null)), F = FAILS[lang] || (FAILS[lang] = Object.create(null));
 			for (var i = 0; i < batch.length; i++) {
-				var key = batch[i], r = res && typeof res[i] === "string" && res[i] ? res[i] : null, old = M[key];
+				var key = batch[i], r = res && typeof res[i] === "string" && res[i] ? fixDoubles(key, res[i], lang) : null, old = M[key];
 				if (redo) {
 					redoLeft--;
 					if (r !== null && typeof old === "string" && r !== old) { redoChanged++; }
@@ -6486,7 +6805,27 @@ LIVE_JS = r'''/* === sugarcube_translate: перевод на лету (-l / --l
 			var a = document.querySelector("#" + id + " a");
 			if (a && L10N[m[id]]) { quiet(function () { a.textContent = L10N[m[id]]; }); }
 		});
+		quiet(fitMenu);
 	}
+	/* переведённые пункты меню длиннее английских: если в теме игры они узкие (в ряд), шрифт чуть меньше.
+	   Только меню SugarCube (у другой игры свой #menu — не трогаем) и только когда меню переведено */
+	function fitMenu() {
+		if (ENGINE === "web") { return; }
+		try {
+			Array.prototype.forEach.call(document.querySelectorAll("#menu li a"), function (a) {
+				a.style.transition = "none";  // у ссылок SugarCube плавный переход 0.2 с: размер иначе меняется не сразу
+				a.style.fontSize = ""; a.style.whiteSpace = "";
+				if (LANG !== "off" && a.clientWidth >= 20) {  // панель не скрыта
+					var fs = parseFloat(getComputedStyle(a).fontSize) || 13, min = Math.max(8, fs * 0.65);
+					a.style.whiteSpace = "nowrap";
+					while (a.scrollWidth > a.clientWidth + 1 && fs > min) { fs -= 0.5; a.style.fontSize = fs + "px"; }
+					if (a.scrollWidth > a.clientWidth + 1) { a.style.whiteSpace = ""; a.style.fontSize = ""; }  // и мелким не влезает — перенос строки, шрифт прежний
+				}
+				a.style.transition = "";
+			});
+		} catch (e) { /* ничего страшного */ }
+	}
+	if (ENGINE !== "web") { window.addEventListener("resize", function () { quiet(fitMenu); }); }  // и после каждого пассажа (start)
 	function applyUI(lang) {
 		if (!L10N || !ORIG_UI) { return; }
 		var setMap = function (map) {
@@ -7351,6 +7690,7 @@ LIVE_JS = r'''/* === sugarcube_translate: перевод на лету (-l / --l
 			if (pendingPassage > 0 && LANG !== "off") { setWait(true); }
 			makePanel();
 			relabel();
+			setTimeout(function () { quiet(fitMenu); }, 400);  // тема могла дорисовать меню позже
 		});
 	}
 	if (ENGINE === "web") { boot(); }  // другая игра на HTML: всё через наблюдение за страницей
@@ -7662,7 +8002,7 @@ def live_pa_html(tr, items, sep=", "):
         for (k, _), x in zip(ch, res):
             out = from_html(x, k, info[k])
             if out:
-                got[k] = out
+                got[k] = fix_doubles(k, out, tr.src, tr.dst)
     again = [(k, i) for k, i in items if k not in got and "g" in i] if sep == ", " else []
     if again:  # список подписей перепутан («F-cup» → «FF») — ещё раз, через «|»
         got.update(live_pa_html(tr, again, " | "))
@@ -7679,6 +8019,7 @@ def live_redo(tr, texts, hinfo=None):
     tr.offline, tr.stop_reason = False, ""
     tr.halt.clear()
     html = live_pa_html(tr, [(t, (hinfo or {})[t]) for t in todo if (hinfo or {}).get(t)])
+    html = {t: r for t, r in html.items() if not untranslated(t, r, tr.dst)}  # иначе — обычным путём
 
     def again(t):
         if t in html:
@@ -7693,8 +8034,7 @@ def live_redo(tr, texts, hinfo=None):
             done += 1
             if r != tr.cache.get(t):
                 changed += 1
-            tr.cache[t] = r
-            tr.cache.pop(SAME_MARK + t, None)
+            tr.put_alone(t, r)
     tr.save(force=True)
     print(f"  [{tr.dst}] страница переведена заново: {done} из {len(todo)} фраз, изменилось {changed}",
           file=sys.stderr)
@@ -7720,7 +8060,9 @@ def live_translate(tr, texts, st, force=False, hinfo=None):
         st["err"] = ""
         try:
             html = live_pa_html(tr, [(t, hinfo[t]) for t in missing if hinfo and hinfo.get(t)])
-            for t, r in html.items():  # с тегами — HTML-ом, как Chrome; остальное — обычным путём
+            # с тегами — HTML-ом, как Chrome; остальное (и то, что вернулось без перевода) — обычным путём
+            html = {t: r for t, r in html.items() if not untranslated(t, r, tr.dst)}
+            for t, r in html.items():
                 tr.cache[t] = r
             tr.prefetch([t for t in missing if t not in html], quiet=True)
             # испорченные метки сразу переводим заново по одной (параллельно) — игре не нужен второй запрос
@@ -7735,7 +8077,7 @@ def live_translate(tr, texts, st, force=False, hinfo=None):
                         return t, None
                 for t, r in Translator._parallel(again, bad):
                     if live_marks_ok(t, r):
-                        tr.cache[t] = r
+                        tr.put_alone(t, r)
         except Halted:
             pass
         except BadLanguage:
@@ -7791,7 +8133,9 @@ def live_page(game, cfg, embed=None, web=False, manual=None):
     embed — {язык: {фраза: перевод}}: готовые переводы прямо в файле (для запуска без окна скрипта).
     web — не SugarCube: скрипт перевода — отдельным <script> в конце страницы."""
     js = ("/* === Добавлено sugarcube_translate: перевод на лету === */\nwindow.RUT_CFG = "
-          + json.dumps(cfg, ensure_ascii=False) + ";\n" + LIVE_JS + "/* === конец добавленного === */\n")
+          + json.dumps(cfg, ensure_ascii=False) + ";\n"
+          + LIVE_JS.replace("python sugarcube_translate.py", "python " + json.dumps(PROG_CMD)[1:-1])
+          + "/* === конец добавленного === */\n")
     game.reset()
     injected = (not web) and game.inject(js)
     html = game.render()
@@ -8011,7 +8355,8 @@ def run_live(args, game, game_path, engine, key, glossary):
         live_import(pool, args.import_files)
     default = args.dst or "auto"  # без флага — язык браузера (если это не язык оригинала), дальше — выбор игрока
     cfg = {"lang": default, "src": args.src, "server": "/__rut/translate", "wait": int(args.live_wait * 1000),
-           "lispWidgets": [] if args.no_lisp else sorted(widgets), "lispWords": {} if args.no_lisp else pairs}
+           "lispWidgets": [] if args.no_lisp else sorted(widgets), "lispWords": {} if args.no_lisp else pairs,
+           "dbl": DOUBLES}
     if web:  # не SugarCube: переводим всё, что появляется на странице
         prof = web_profile(game.text)
         cfg.update(engine="web", roots=prof["roots"], noSel=prof["noSel"], waitSel=prof["waitSel"],
@@ -8062,7 +8407,7 @@ def run_live(args, game, game_path, engine, key, glossary):
               "  Нужен интернет для нового текста. Если Google не пускает браузер, в боковой панели будет "
               "«нет связи с Google» — тогда играйте через -c (--console-live) на ПК.\n"
               "  Переведённое на телефоне: «Перевод» → «Сохранить переводы в файл», затем на ПК\n"
-              f"      python sugarcube_translate.py \"{args.input}\" -i <этот файл>\n"
+              f"      python {PROG_CMD} \"{args.input}\" -i <этот файл>\n"
               "  — всё попадёт в этот файл игры.", file=sys.stderr)
         return
     print("Режим «перевод на лету»." + (f" Язык по умолчанию: {args.dst}." if args.dst else
@@ -9102,6 +9447,7 @@ def translate_marked(tr, items):
         return
     tr._pool() if tr.engine in ("free", "google") else None
     html = live_pa_html(tr, [(k, {"p": h["p"]}) for k, h in todo if h and h.get("p")])
+    html = {k: r for k, r in html.items() if not untranslated(k, r, tr.dst)}  # иначе — обычным путём
     for k, r in html.items():
         tr.cache[k] = r
     tr.prefetch([k for k, _ in todo if k not in html])
@@ -9116,7 +9462,7 @@ def translate_marked(tr, items):
                 return t, None
         for t, r in Translator._parallel(again, bad[:400]):
             if live_marks_ok(t, r):
-                tr.cache[t] = r
+                tr.put_alone(t, r)
     tr.save(force=True)
 
 
@@ -9481,6 +9827,7 @@ def _rut_live_setup():
     st.user = {}
     st.user_manual = {}
     st.user_dict = {}
+    st.same_ok = {}  # language -> phrases that Google really leaves as they are (asked alone too)
     st.fail = {}
     st.q = {}
     st.seq = 0
@@ -9511,6 +9858,7 @@ def _rut_live_setup():
     st.off = False
     st.cur_text = None
     st.cur_what = None
+    st.cur_char = None
     st.char_depth = 0
     st.reg_count = 0
     st.down_until = 0.0
@@ -9522,8 +9870,8 @@ def _rut_live_setup():
     st.probing = False
     st.probed = False
     st.rr = 0
-    st.ssl_mode = 0
-    st.ssl_ctx = None
+    st.ssl_mode = 0  # 0 - the system's certificates, 1 - certifi's, 2 - none (phones without either)
+    st.ssl_ctxs = {}
     st.lock = threading.RLock()
     st.cond = threading.Condition(st.lock)
     st.workers = False
@@ -9595,6 +9943,9 @@ def _rut_live_setup():
             return
         if isinstance(d.get("prefs"), dict):
             st.prefs.update(d["prefs"])
+        for l, ks in (d.get("same") or {}).items():
+            if isinstance(ks, list):
+                st.same_ok[l] = set(k for k in ks if isinstance(k, T_TEXT))
         dev_man = d.get("manual") if isinstance(d.get("manual"), dict) else {}
         for l, ks in dev_man.items():
             if isinstance(ks, list):
@@ -9607,9 +9958,17 @@ def _rut_live_setup():
             M = st.mem.setdefault(l, {})
             emb = st.emb_manual.get(l, ())
             dm = st.user_manual.get(l, ())
+            ok = st.same_ok.get(l, set())
             for k, v in m.items():
                 if k in emb and k not in dm:
                     continue
+                if k not in dm:
+                    half = half_done(k, v, l)
+                    if half or (k not in ok and ((v == k and same_suspect(k, v, l)) or part_suspect(k, v))):
+                        st.user[l].pop(k, None)  # came back from Google (partly) untranslated: ask again
+                        if half:
+                            ok.discard(k)  # half-translated: every new session (v0.19.2 remembered them)
+                        continue
                 M[k] = v
         for l, m in (d.get("dicts") or {}).items():
             if isinstance(m, dict):
@@ -9624,6 +9983,8 @@ def _rut_live_setup():
                 "langs": dict((l, dict(m)) for l, m in st.user.items() if m),
                 "manual": dict((l, sorted(s)) for l, s in st.user_manual.items() if s),
                 "dicts": dict((l, dict(m)) for l, m in st.user_dict.items() if m)}
+        with st.lock:
+            snap["same"] = dict((l, sorted(x)[:20000]) for l, x in st.same_ok.items() if x)
         st.saving = True
 
         def run():
@@ -9925,6 +10286,19 @@ def _rut_live_setup():
                 st.say_untr.pop(x, None)
             del st.say_untr_order[:100]
 
+    def say_forms(body):
+        # what the say screen gets: the line with the character's what_prefix / what_suffix (often quotes)
+        out = [body]
+        try:
+            ch = st.cur_char
+            pre = getattr(ch, "what_prefix", None) or u""
+            suf = getattr(ch, "what_suffix", None) or u""
+            if (pre or suf) and isinstance(pre, STR_TS) and isinstance(suf, STR_TS) and u"[" not in pre + suf:
+                out.append(u(pre) + body + u(suf))
+        except Exception:
+            pass
+        return out
+
     PAUSE_RE = re.compile(u"\\{\\{|\\{([wp])(?:=[^{}]*)?\\}")
 
     def strip_pauses(s):
@@ -10054,12 +10428,20 @@ def _rut_live_setup():
         pl = lang_pref()
         if pl is not None and pl.lower() not in (u"english", u"en", u"eng"):
             return False
+        try:  # text of Ren'Py's error screen or console that is being built right now
+            n = getattr(R.display.screen._current_screen, "screen_name", None)
+            if (n[0] if isinstance(n, tuple) and n else n) in ERR_SCREENS:
+                return False
+        except Exception:
+            pass
         return not error_screen()
+
+    ERR_SCREENS = ("_exception", "_parse_errors", "_console", "_developer")
 
     def error_screen():
         t, v = st.err_screen
         now = time.time()
-        if now - t < 0.3:
+        if now - t < 0.1:
             return v
         v = False
         try:
@@ -10131,6 +10513,30 @@ def _rut_live_setup():
             return None
         return unmark(u"".join(out), info, None)
 
+    st.dbl_seen = set()
+
+    def stored_fix(lang, k, v):
+        # translations kept from before (the game's built-in ones, rut_live.json, the script window):
+        # "X and X" is removed when the text is shown first; manual fixes stay as the player wrote them
+        if (lang, k) in st.dbl_seen:
+            return v
+        st.dbl_seen.add((lang, k))
+        if len(st.dbl_seen) > 50000:
+            st.dbl_seen.clear()
+        if k in st.manual.get(lang, ()):
+            return v
+        v2 = fix_doubles(k, v, lang)
+        if v2 != v:
+            with st.lock:  # not over a translation that has just come
+                M = st.mem.setdefault(lang, {})
+                if M.get(k) == v:
+                    M[k] = v2
+                U = st.user.get(lang)
+                if U is not None and U.get(k) == v:
+                    U[k] = v2
+                    st.save_due = True
+        return v2
+
     def lookup(info, lang, req=True, prio=1):
         M = st.mem.get(lang) or {}
         key, mp = key_for(info, lang)
@@ -10141,6 +10547,7 @@ def _rut_live_setup():
             if v is None:
                 continue
             got_any = True
+            v = stored_fix(lang, k, v)
             r = unmark(v, info, m)
             if r is not None:
                 return r, k
@@ -10205,7 +10612,8 @@ def _rut_live_setup():
             if not r:
                 return None
             r = strip_pauses(r)
-            note_out(r)
+            if r != s:
+                note_out(r)
             return r
         lang = st.lang
         memo = st.memo.get(lang)
@@ -10235,7 +10643,8 @@ def _rut_live_setup():
             if st.cur_text is not None:
                 st.touched[id(st.cur_text)] = weakref.ref(st.cur_text)
             if r:
-                note_out(r)
+                if r != s:
+                    note_out(r)
                 memo[s] = r
             return r or None
         if not wanted(s, lang):
@@ -10258,7 +10667,8 @@ def _rut_live_setup():
         note_src(s)
         if r is None:
             return None
-        note_out(r)
+        if r != s:  # the same as the original (Google gave it back as is): it may be translated later
+            note_out(r)
         if len(memo) > 30000:
             memo.clear()
         memo[s] = r
@@ -10381,8 +10791,10 @@ def _rut_live_setup():
             if isinstance(r, STR_TS) and u(r).strip():
                 r = u(r)
                 if force or k not in man:
-                    M[k] = r
-                    U[k] = r
+                    with st.lock:
+                        M[k] = r
+                        U[k] = r
+                        st.dbl_seen.discard(lk)  # checked again when it is shown (stored_fix)
                 st.fail.pop(lk, None)
                 ok = True
             else:
@@ -10420,22 +10832,24 @@ def _rut_live_setup():
         return via_google(lang, keys, hints)
 
     # --- HTTP ---
-    def ssl_ctx():
-        if st.ssl_ctx is not None:
-            return st.ssl_ctx
+    def ssl_ctx(mode):
+        # one context for each way of checking certificates: a request made while another one switches the
+        # way keeps the context of its own way (None - this way is not available here)
+        if mode in st.ssl_ctxs:
+            return st.ssl_ctxs[mode]
         import ssl
         ctx = None
-        if st.ssl_mode == 0:
-            ctx = ssl.create_default_context()
-        elif st.ssl_mode == 1:
-            try:
+        try:
+            if mode == 0:
+                ctx = ssl.create_default_context()
+            elif mode == 1:
                 import certifi
                 ctx = ssl.create_default_context(cafile=certifi.where())
-            except Exception:
-                st.ssl_mode = 2
-        if st.ssl_mode >= 2:
-            ctx = ssl._create_unverified_context()
-        st.ssl_ctx = ctx
+            else:
+                ctx = ssl._create_unverified_context()
+        except Exception:
+            ctx = None
+        st.ssl_ctxs[mode] = ctx
         return ctx
 
     if PY2:
@@ -10455,11 +10869,21 @@ def _rut_live_setup():
     def http(url, data=None, headers=None, timeout=20):
         h = {"User-Agent": UA}
         h.update(headers or {})
-        for attempt in range(3):
+        for attempt in range(5):
             req = UR.Request(url, data=data, headers=h)
+            mode = st.ssl_mode
             try:
                 if url.startswith("https"):
-                    r = UR.urlopen(req, timeout=timeout, context=ssl_ctx())
+                    ctx = ssl_ctx(mode)
+                    if ctx is None:  # e.g. no certifi in this Ren'Py: the next way
+                        with st.lock:
+                            if st.ssl_mode == mode and mode < 2:
+                                st.ssl_mode = mode + 1
+                                log("TLS certificates: switching mode", st.ssl_mode)
+                        if mode < 2:
+                            continue
+                        raise IOError("TLS: no SSL context")
+                    r = UR.urlopen(req, timeout=timeout, context=ctx)
                 else:
                     r = UR.urlopen(req, timeout=timeout)
                 try:
@@ -10471,12 +10895,14 @@ def _rut_live_setup():
                 if code is not None:
                     raise HttpError(code)
                 s = repr(e)
-                if url.startswith("https") and st.ssl_mode < 2 and (
-                        "CERTIFICATE_VERIFY_FAILED" in s or "certificate verify failed" in s):
-                    st.ssl_mode += 1
-                    st.ssl_ctx = None
-                    log("TLS certificates: switching mode", st.ssl_mode)
-                    continue
+                if url.startswith("https") and ("CERTIFICATE_VERIFY_FAILED" in s or "certificate verify failed" in s):
+                    with st.lock:
+                        if mode < st.ssl_mode:
+                            continue  # another request switched already (requests go in parallel): try the new way
+                        if st.ssl_mode < 2:
+                            st.ssl_mode += 1
+                            log("TLS certificates: switching mode", st.ssl_mode)
+                            continue
                 raise
         raise IOError("TLS")
 
@@ -10626,7 +11052,7 @@ def _rut_live_setup():
         err_once("google " + ep["kind"] + " " + ep["host"], e)
         ep["ok"] = False
         ep["why"] = why_of(e)
-        ep["until"] = time.time() + (60 if ep["ever"] else 600)
+        ep["until"] = time.time() + (60 if ep["ever"] else 180)
 
     def ep_good(ep):
         ep["ok"] = ep["ever"] = True
@@ -10651,10 +11077,10 @@ def _rut_live_setup():
     class BadLang(Exception):
         pass
 
-    def google_lines(lines, lang):
+    def google_lines(lines, lang, prefer=None):
         tried, n400, nerr = set(), 0, 0
         while True:
-            ep = pick(tried)
+            ep = (pick(tried, prefer) if prefer else None) or pick(tried)
             if ep is None:
                 if n400 and n400 == nerr:
                     raise BadLang(lang)
@@ -10706,6 +11132,153 @@ def _rut_live_setup():
         out = unesc_html(re.sub(u"<[^>]*>", u"", out))
         return out if marks_ok(key, out) else None
 
+    DBL = DATA.get("dbl") if isinstance(DATA.get("dbl"), dict) else None
+    dbl_rx = {}
+
+    def dbl_conj(l, table="conj"):
+        if not DBL:
+            return None
+        b = base_lang(l)
+        return (DBL.get(table) or {}).get(b) or (DBL.get("conj") or {}).get(b)
+
+    def dbl_get(lang):
+        if lang not in dbl_rx:
+            rx = None
+            tc, sc = dbl_conj(lang), dbl_conj(st.src)
+            if tc and sc:
+                w = u"[^\\W\\d_]+"
+                fl = re.I | re.U
+                pair = u"(?<![\\w-])(?=((%s),? (?:%s) (%s))(?![\\w-]))"
+                cm = (DBL.get("cmp") or {}).get(base_lang(lang)) if isinstance(DBL.get("cmp"), dict) else None
+                rx = {"tgt": re.compile(u"(?<![\\w-])((?:%s )?(?:%s )?%s),? (?:%s) \\1(?![\\w-])" % (w, w, w, tc), fl),
+                      "rep": re.compile(u"(?<![\\w-])(%s)(?:,? (?:\\w{1,4} )?|-)\\1(?![\\w-])" % w, fl),
+                      "src": re.compile(pair % (w, dbl_conj(st.src, "pairs"), w), fl),
+                      "pair": re.compile(pair % (w, dbl_conj(lang, "pairs"), w), fl),
+                      "cmp": re.compile(u(cm), re.U) if cm else None,
+                      "keep": set(u(x) for x in (DBL.get("keep") or ())),
+                      "conj": [u" %s " % c for c in tc.split(u"|")]}
+            dbl_rx[lang] = rx
+        return dbl_rx[lang]
+
+    def fix_doubles(src, res, lang):
+        # "you are done and exhausted" -> "vy ustali i ustali": two different words of the original became one
+        # word twice. Only as many repeats are removed as pairs "A and B" of the original are missing in the
+        # translation; repeats that are in the original ("again and again") stay. The same as fix_doubles of
+        # the script and fixDoubles of the browser version.
+        if not isinstance(res, STR_TS) or not isinstance(src, STR_TS) or not res or not src:
+            return res
+        try:
+            rx = dbl_get(lang)
+            if rx is None:
+                return res
+            low = res.lower()
+            if not any(c in low for c in rx["conj"]):
+                return res
+            spans = [m.span() for m in rx["tgt"].finditer(res)]
+            if not spans:
+                return res
+            plain = MARK_RE.sub(u" ", src)
+            if rx["rep"].search(plain):
+                return res
+            n = sum(1 for m in rx["src"].finditer(plain) if m.group(2).lower() != m.group(3).lower())
+            for m in rx["pair"].finditer(res):
+                a, b = m.start(), m.start() + len(m.group(1))
+                if m.group(2).lower() != m.group(3).lower() and not any(s0 <= a and b <= e for s0, e in spans):
+                    n -= 1
+            if n <= 0:
+                return res
+            left = [n]
+
+            def one(m):
+                x = m.group(1)
+                last = x.split()[-1].lower()
+                if (left[0] <= 0 or last in rx["keep"] or (rx["cmp"] is not None and rx["cmp"].search(last))
+                        or len(x) < 3):
+                    return m.group(0)
+                left[0] -= 1
+                return x
+            return rx["tgt"].sub(one, res)
+        except Exception as e:
+            err_once("doubles", e)
+            return res
+
+    def same_suspect(k, r, lang):
+        # Google sometimes gives a line of a batch back untranslated: such a line is asked again alone
+        if not isinstance(r, STR_TS) or not isinstance(k, STR_TS):
+            return False
+        plain = MARK_RE.sub(u" ", k)
+        if SRC_SCRIPT == u"lat":
+            if len(re.findall(u"[A-Za-z]{3,}", plain)) < 2:
+                return False
+        elif sum(1 for ch in plain if ch.isalpha() and script_of(ch) == SRC_SCRIPT) < 4:
+            return False
+        if u(r).strip() == k.strip():
+            return True
+        tgt = lang_script(lang)
+        return tgt != u"lat" and tgt != SRC_SCRIPT and not has_script(MARK_RE.sub(u" ", u(r)), tgt)
+
+    LATW = re.compile(u"[A-Za-z][A-Za-z']+")
+    # re.U: in Python 2 (Ren'Py 7 and older) \W and \s otherwise know only ASCII
+    NONLAT_RUN = re.compile(u"[^\\W\\d_A-Za-z\u00c0-\u024f]+", re.U)  # letters of other scripts (Cyrillic...)
+    SENT_SPLIT = re.compile(u"(?<=[.!?\u2026])(\\s+)(?=\\S)", re.U)
+
+    TITLE_SMALL = frozenset(u"the and for nor but yet with from into onto upon over off out per via von van der des "
+                            u"del los las".split())
+    INTERJ = frozenset(u"hmm huh ugh ahh ohh uhh umm shh ooh aah argh heh hah haha hehe ouch wow eek gah pfft tsk "
+                       u"psst whoa yay yikes hmph mhm ahem phew meh aww eww".split())
+    INTERJ_RE = re.compile(u"(.)\\1\\1")  # "ahhh", "mmm", "nooo": Google often leaves such words as they are
+
+    def plain_run(ws):
+        # a run of English words counts as left untranslated only if it reads like a sentence: names and
+        # titles ("Call of Duty", "The Lord of the Rings") are written with capitals, only small words in
+        # lower case, and stay so on purpose. A sentence has two ordinary words in lower case (or all in
+        # capitals: a shout); interjections ("ahhh", "hmm") do not count.
+        return len(ws) >= 3 and sum(1 for w in ws if len(w) >= 3 and (w.islower() or w.isupper())
+                                    and w.lower() not in TITLE_SMALL and w.lower() not in INTERJ
+                                    and not INTERJ_RE.search(w.lower())) >= 2
+
+    def leftover(k, r):
+        # words of the original that stayed in the translation as they are: Google now and then leaves a
+        # sentence of a long line in English ("Tch... Keep drooling. But if you want another round...").
+        # Another script: runs of 3+ words of the original; Latin script: the longest run of the same words.
+        so = LATW.findall(MARK_RE.sub(u" ", k))
+        sw = [w.lower() for w in so]
+        if len(sw) < 4:
+            return 0, len(sw)
+        rp = MARK_RE.sub(u" ", u(r))
+        sset = set(sw)
+        if NONLAT_RUN.search(rp):
+            n = 0
+            for seg in NONLAT_RUN.split(rp):
+                ws = [w for w in LATW.findall(seg) if w.lower() in sset]
+                if plain_run(ws):
+                    n += len(ws)
+            return n, len(sw)
+        rw = [w.lower() for w in LATW.findall(rp)]
+        if sum(1 for w in rw if w in sset) < 5:
+            return 0, len(sw)  # fewer than 5 same words: no run of 5 (quick, for big files of translations)
+        best, end, prev = 0, 0, [0] * (len(rw) + 1)
+        for i, a in enumerate(sw):
+            cur = [0] * (len(rw) + 1)
+            for j, b in enumerate(rw):
+                if a == b:
+                    cur[j + 1] = prev[j] + 1
+                    if cur[j + 1] > best:
+                        best, end = cur[j + 1], i + 1
+            prev = cur
+        return (best if best >= 5 and plain_run(so[end - best:end]) else 0), len(sw)
+
+    def part_suspect(k, r):
+        if SRC_SCRIPT != u"lat" or not isinstance(r, STR_TS) or not isinstance(k, STR_TS):
+            return False
+        n, tot = leftover(k, r)
+        return n >= 3 and (n * 5 >= tot or n >= 5)  # a fifth of the line, or a whole sentence in a long one
+
+    def half_done(k, r, lang):
+        # translated only in part (not left whole as it is): such a line is not remembered as "stays so",
+        # it is asked again next session - the Google failure may have been passing
+        return part_suspect(k, r) and not same_suspect(k, r, lang)
+
     def via_google(lang, keys, hints):
         res = [None] * len(keys)
         hidx = [i for i, h in enumerate(hints) if h and h.get("p")]
@@ -10738,7 +11311,64 @@ def _rut_live_setup():
                     res[i] = x
             except Exception:
                 pass
-        return res
+        def badness(k, x):
+            if not x:
+                return 10 ** 6
+            if MARK_RE.search(k) and not marks_ok(k, x):
+                return 10 ** 5
+            if same_suspect(k, x, lang):
+                return 10 ** 4
+            return leftover(k, x)[0] if part_suspect(k, x) else 0
+
+        ok = st.same_ok.get(lang) or ()
+        bad = [i for i, k in enumerate(keys) if res[i] is not None and k not in ok
+               and (same_suspect(k, res[i], lang) or part_suspect(k, res[i]))][:8]
+        sure = []
+        # a part left in English: alone, through another kind of address, then sentence by sentence
+        # (sentence by sentence through "pa": each sentence is a separate piece there, not lines of one text)
+        part_ways = [("gtx", False), ("pa", False), ("pa", True)]
+        no_space = base_lang(lang) in (u"zh", u"ja")  # sentences go without a space between them
+        for i in bad:
+            k, best = keys[i], res[i]
+            bb, failed = badness(k, best), False
+            part = part_suspect(k, best)
+            if part:
+                ways = list(part_ways)
+            else:
+                ways = [(None, False)] if len(keys) > 1 else []  # a line asked alone already is not asked again
+            w = 0
+            while w < len(ways) and bb:
+                kind, split = ways[w]
+                w += 1
+                try:
+                    if split:
+                        bits = SENT_SPLIT.split(k)  # sentences and the spaces (line breaks) between them
+                        if len(bits) < 3:
+                            continue
+                        got = google_lines(bits[0::2], lang, kind)
+                        if len(got) != len(bits[0::2]) or not all(isinstance(g, STR_TS) and g for g in got):
+                            continue
+                        x = got[0]
+                        for sp, g in zip(bits[1::2], got[1:]):
+                            x += (u"" if no_space and not sp.strip(u" ") else sp) + g
+                    else:
+                        x = google_lines([k], lang, kind)[0]
+                except Exception:
+                    failed = True  # not known yet: asked again next time
+                    continue
+                b = badness(k, x)
+                if b < bb:
+                    best, bb = x, b
+                if not part and bb and part_suspect(k, best):
+                    part = True  # asked again, came back half-translated: the other ways too
+                    ways.extend(part_ways)
+            res[i] = best
+            if bb and not failed and not half_done(k, best, lang):
+                sure.append(k)
+        if sure:  # stays so whatever we do (names, brands, interjections; what Google will not translate)
+            with st.lock:
+                st.same_ok.setdefault(lang, set()).update(sure)
+        return [fix_doubles(k, r, lang) for k, r in zip(keys, res)]
 
     def start_probe():
         if st.probing or st.web:
@@ -10787,7 +11417,18 @@ def _rut_live_setup():
         # only text that is being shown (Text objects, dialogue): strings that the game builds with
         # renpy.substitute() for its own logic stay as they are
         if not translate or (st.cur_text is None and st.char_depth == 0) or not active():
-            return orig_sub(s, scope, force, translate)
+            rv = orig_sub(s, scope, force, translate)
+            try:
+                # a line with pauses {w} shown in the original: if translation is switched on in the middle
+                # of it, its next parts must stay as they are (Ren'Py checks the text of every part)
+                if (translate and st.cur_what is not None and isinstance(s, STR_TS) and s == st.cur_what
+                        and threading.current_thread() is MAIN and isinstance(rv[0], STR_TS)
+                        and any(m.group(1) for m in PAUSE_RE.finditer(u(rv[0])))):
+                    for f in say_forms(u(rv[0])):
+                        note_say_untr(f)
+            except Exception as e:
+                err_once("substitute_off", e)
+            return rv
         is_say = st.cur_what is not None and isinstance(s, STR_TS) and s == st.cur_what
         if is_say:
             st.cur_what = None
@@ -10816,9 +11457,11 @@ def _rut_live_setup():
                 short = strip_pauses(full) if st.pause_fix else full
                 if short != full and short.strip() and wanted(full, st.lang) and mark(full) is not None:
                     note_pauses(full, short)
-                    note_say_untr(short)
+                    for f in say_forms(short):
+                        note_say_untr(f)
                     return (short, rv[1])
-                note_say_untr(full)
+                for f in say_forms(full):
+                    note_say_untr(f)
         except Exception as e:
             err_once("substitute", e)
         return rv
@@ -10835,6 +11478,10 @@ def _rut_live_setup():
             if substitute is False and getattr(self, "_rut_src", None) is not None and not st.off:
                 self._rut_src = None
             return orig_set(self, text, scope, substitute, update)
+        try:
+            self._rut_seen = True  # went through translation (see per_interact below)
+        except Exception:
+            pass
         prev = st.cur_text
         st.cur_text = self
         try:
@@ -10875,14 +11522,40 @@ def _rut_live_setup():
     set_text._rut_orig = orig_set
     TX.set_text = set_text
 
+    # Text made when translation could not run: while the game was starting (text inside images, say
+    # placeholder pictures "SECTOR A: FOOD STORAGE"), or in Ren'Py's background thread that prepares
+    # screens in advance. It is translated when it is about to be shown.
+    orig_pi = TX.__dict__.get("per_interact") or getattr(TX, "per_interact", None)
+    orig_pi = getattr(orig_pi, "_rut_orig", None) or orig_pi
+
+    def per_interact(self):
+        try:
+            if (not getattr(self, "_rut_seen", False) and not getattr(self, "_uses_scope", True)
+                    and not getattr(self, "tokenized", False) and not (INP is not None and isinstance(self, INP))
+                    and active()):
+                # a line of dialogue already on the screen keeps its length (end) and its pauses {w}: a
+                # translation of another length would be cut off (or break on a cut tag "{b") - such a
+                # line stays as it is, the next one is translated
+                if dlg_ok(self, self.text[0] if getattr(self, "text", None) else None):
+                    self.set_text(self.text_parameter, None, getattr(self, "substitute", None), True)
+                else:
+                    self._rut_seen = True
+        except Exception as e:
+            err_once("per_interact", e)
+        return orig_pi(self)
+    if orig_pi is not None:
+        per_interact._rut_orig = orig_pi
+        TX.per_interact = per_interact
+
     AC = R.character.ADVCharacter
     orig_call = AC.__dict__.get("__call__")
     orig_call = getattr(orig_call, "_rut_orig", None) or orig_call
 
     def char_call(self, *args, **kwargs):
         what = args[0] if args else kwargs.get("what")
-        prev = st.cur_what
+        prev, prev_ch = st.cur_what, st.cur_char
         st.cur_what = what if (isinstance(what, STR_TS) and what) else None
+        st.cur_char = self
         try:
             n = getattr(self, "name", None)  # characters made during the game ($ a = Character("Ashley"))
             if isinstance(n, STR_TS) and u"[" not in n and not getattr(self, "dynamic", False):
@@ -10897,7 +11570,7 @@ def _rut_live_setup():
             return orig_call(self, *args, **kwargs)
         finally:
             st.char_depth -= 1
-            st.cur_what = prev
+            st.cur_what, st.cur_char = prev, prev_ch
     char_call._rut_orig = orig_call
     AC.__call__ = char_call
 
@@ -11232,6 +11905,9 @@ def _rut_live_setup():
                         st.touched.pop(k, None)
                 if len(st.touched) > 3000:
                     st.touched.clear()
+            if st.reload_done:
+                st.reload_done = False
+                drop_reload()
             now = time.time()
             if ((st.save_due and now - st.last_save > 15) or st.save_now) and not st.saving:
                 st.save_due = st.save_now = False
@@ -11591,13 +12267,15 @@ def _rut_live_setup():
         say(ui_t("saved_to", u"Saved:") + u" " + u"\n".join(where))
 
     def corner_idx():
+        # 0 top right, 1 top left, 2 bottom left, 3 bottom right (the default since v0.18)
         try:
-            return int(st.prefs.get("corner", 0) or 0) % 4
+            v = st.prefs.get("pos")
+            return 3 if v is None else int(v) % 4
         except Exception:
-            return 0
+            return 3
 
     def corner():
-        st.prefs["corner"] = (corner_idx() + 1) % 4
+        st.prefs["pos"] = (corner_idx() + 1) % 4
         st.save_now = True
         restart()
 
@@ -11606,6 +12284,101 @@ def _rut_live_setup():
         st.save_now = True
         say(ui_t("hidden_hint", u"In the game the button is hidden; it is always shown in the game menu "
                                 u"and the main menu") if st.prefs["hide_game"] else u"")
+
+    st.tbar = None
+
+    def set_transp(v):
+        v = max(0, min(90, int(v)))
+        if v != transp():
+            st.prefs["transp"] = v
+            st.save_due = True
+            restart()
+
+    def transp_bar(Wi):
+        # [-] [slider] [+]. The slider object is kept between redraws of the panel: Ren'Py keeps dragging
+        # only the same object, and the panel is redrawn while it moves (to show the new transparency).
+        BH = R.display.behavior
+        Bar, Adj = getattr(BH, "Bar", None), getattr(BH, "Adjustment", None)
+        sp = px(0.3)
+        bw = max(sz(), int(sz() * 1.5))
+        ui.hbox(spacing=sp)
+        btn(u"\u2212", act(set_transp, transp() - 10), 0.8, False, bw, True)
+        made = False
+        if Bar is not None and Adj is not None:
+            try:
+                w, h = Wi - 2 * bw - 2 * sp, max(sz(0.6), px(0.9))
+                if st.tbar is None or st.tbar[0] != (w, h):
+                    adj = Adj(range=90, value=transp(), changed=lambda v: set_transp(v), step=5, page=10)
+                    bar = Bar(adjustment=adj, xminimum=w, xmaximum=w, yminimum=h, ymaximum=h, yalign=0.5,
+                              left_bar=Solid("#4a6ae8"), right_bar=Solid("#2a3352"),
+                              hover_left_bar=Solid("#6a86ff"), hover_right_bar=Solid("#33406a"),
+                              thumb=None, thumb_shadow=None, thumb_offset=0, left_gutter=0, right_gutter=0,
+                              bar_vertical=False, bar_invert=False, bar_resizing=False, xmargin=0, ymargin=0,
+                              xpadding=0, ypadding=0)
+                    st.tbar = ((w, h), bar, adj)
+                elif getattr(R.display, "focus", None) is not None and R.display.focus.get_grab() is not st.tbar[1] \
+                        and st.tbar[2].value != transp():
+                    st.tbar[2].change(transp())  # changed by the buttons
+                ui.add(st.tbar[1])
+                made = True
+            except Exception as e:
+                err_once("slider", e)
+                st.tbar = None
+        if not made:
+            lbl(u"%d%%" % transp(), 0.8)
+        btn(u"+", act(set_transp, transp() + 10), 0.8, False, bw, True)
+        ui.close()
+
+    RELOAD = "_rut_reload"
+    st.reload_done = False
+
+    def in_game():
+        try:
+            if getattr(R.store, "main_menu", False) or getattr(R.store, "_in_replay", None):
+                return False
+            log_ = getattr(R.game, "log", None)
+            return log_ is not None and getattr(log_, "current", None) is not None
+        except Exception:
+            return False
+
+    def toast(msg, sec=4.0):
+        # a message in the corner of the screen, for when the panel is closed
+        st.toast = msg
+        st.toast_until = time.time() + sec
+        restart()
+
+    def drop_reload():
+        try:
+            if E.can_load(RELOAD):
+                E.unlink_save(RELOAD)
+        except Exception:
+            pass
+
+    def reload_scene():
+        # what helps with a black screen / a scene that does not go on: save and load at once
+        close_panel()
+        fail = ui_t("reload_fail", u"Can not reload here: save and load the game by hand")
+        try:
+            drop_reload()  # never an old one (left after a crash)
+            E.save(RELOAD, u"")
+            saved = bool(E.can_load(RELOAD))  # games may switch saving off (config.save)
+        except CTRL:
+            raise
+        except Exception as e:
+            err_once("reload", e)
+            saved = False
+        if not saved:
+            return toast(fail)
+        st.reload_done = True
+        try:
+            E.load(RELOAD)
+        except CTRL:
+            raise
+        except Exception as e:
+            err_once("reload", e)
+            st.reload_done = False
+            drop_reload()
+            toast(fail)
 
     # --- Ren'Py's own hidden menus: they need a keyboard, phones have none ---
     def console_mod():
@@ -11684,18 +12457,38 @@ def _rut_live_setup():
             out.append(ui_t("st_badlang", u"Google does not know language %s") % st.bad_lang)
         return out
 
+    # Games give buttons and frames a fixed size (gui.button_height and the like): ours take the size of
+    # what is inside them
+    FREE_H = dict(yminimum=0, ymaximum=None)
+
+    def transp():
+        # transparency of the panel background, percent (slider in "More...")
+        try:
+            return max(0, min(90, int(st.prefs.get("transp", 0) or 0)))
+        except Exception:
+            return 0
+
+    def rgba(rgb, a):
+        return Solid(u"%s%02x" % (rgb, int(max(0.0, min(1.0, a)) * 255)))
+
+    def outl(need):
+        return [(max(1, px(0.07)), "#000000", 0, 0)] if need else []
+
     def lbl(text, f=0.8, color="#ffffff"):
-        ui.text(u"{#rut}" + text.replace(u"{", u"{{"), substitute=False, **fkw(size=sz(f), color=color))
+        ui.text(u"{#rut}" + text.replace(u"{", u"{{"), substitute=False,
+                **fkw(size=sz(f), color=color, outlines=outl(transp() >= 35)))
 
     def btn(text, fn, f=0.8, sel=False, w=None, center=False):
-        kw = dict(clicked=fn, background=Solid("#3a5ad0" if sel else "#2a3352"),
+        t = transp() / 100.0
+        kw = dict(clicked=fn, background=rgba("#3a5ad0", 1 - 0.3 * t) if sel else rgba("#2a3352", 1 - 0.55 * t),
                   hover_background=Solid("#4a6ae8"), xpadding=px(0.45), ypadding=px(0.24),
-                  xmargin=0, ymargin=0, foreground=None, hover_foreground=None)
+                  xmargin=0, ymargin=0, foreground=None, hover_foreground=None, **FREE_H)
         if w:
             kw.update(xminimum=w, xmaximum=w)
         else:
-            kw["xfill"] = True
-        tk = fkw(size=sz(f), color="#ffffff", hover_color="#ffffff", xalign=0.5 if center else 0.0, yalign=0.5)
+            kw.update(xfill=True, xminimum=0, xmaximum=None)
+        tk = fkw(size=sz(f), color="#ffffff", hover_color="#ffffff", xalign=0.5 if center else 0.0, yalign=0.5,
+                 outlines=outl(t >= 0.6))
         kw.update(("text_" + k, v) for k, v in tk.items())
         ui.textbutton(u"{#rut}" + text.replace(u"{", u"{{"), substitute=False, **kw)
 
@@ -11749,7 +12542,7 @@ def _rut_live_setup():
 
     def small_w():
         sw = C.screen_width
-        return int(min(sw * 0.94, max(sw * 0.32, sz() * 18)))
+        return int(min(sw * 0.94, max(sw * 0.34, sz() * 20)))
 
     def big_w():
         sw = C.screen_width
@@ -11757,7 +12550,7 @@ def _rut_live_setup():
 
     def field(name, Wi):
         ui.frame(background=Solid("#f2f2f2"), xpadding=px(0.3), ypadding=px(0.2), xmargin=0, ymargin=0,
-                 xminimum=Wi, xmaximum=Wi)
+                 xminimum=Wi, xmaximum=Wi, **FREE_H)
         if Val is not None:
             ui.input(value=Val(name), length=2000, **fkw(size=sz(0.8), color="#111111"))
         else:
@@ -11929,6 +12722,12 @@ def _rut_live_setup():
         if st.on_top:
             btn(ui_t("btn_hidden", u"In the game the button: hidden") if st.prefs.get("hide_game")
                 else ui_t("btn_shown", u"In the game the button: shown"), act(hide_in_game))
+        lbl(ui_t("transp", u"Panel background transparency") + u": %d%%" % transp(), 0.62, "#c8cfe8")
+        transp_bar(Wi)
+        if in_game():
+            btn(ui_t("reload", u"Reload the scene"), act(reload_scene))
+            lbl(ui_t("reload_hint", u"Black screen, the game does not go on: saves and loads at once"), 0.55,
+                "#8f98b8")
         btn(ui_t("tools", u"Ren'Py tools..."), act(go, "tools"))
         for line in status_lines(True):
             lbl(line, 0.6, "#c8cfe8")
@@ -11996,7 +12795,8 @@ def _rut_live_setup():
         items = st.fix_list
         if not items:
             lbl(ui_t("fix_none", u"No translated text on the screen"), 0.75, "#c8cfe8")
-        per = 8
+        sh = C.screen_height
+        per = max(3, min(8, int((sh * 0.86 - px(6.0)) / float(sz(0.65) + px(0.8)))))
         total = max(1, (len(items) + per - 1) // per)
         st.page = max(0, min(total - 1, st.page))
         for x in items[st.page * per:(st.page + 1) * per]:
@@ -12008,7 +12808,7 @@ def _rut_live_setup():
                     shown = lookup(x["info"], x["lang"], False)[0]
             except Exception:
                 shown = None
-            btn(short(shown or x["src"]), act(start_edit, x), 0.65)
+            btn(short(re.sub(u"\\{[^{}]*\\}", u"", shown or x["src"]) or x["src"]), act(start_edit, x), 0.65)
         if total > 1:
             row([(u"\u25c0", act(page, -1, total), False, 1),
                  (u"%d / %d" % (st.page + 1, total), noop, False, 1),
@@ -12045,16 +12845,17 @@ def _rut_live_setup():
         sw, sh = C.screen_width, C.screen_height
         ui.keymap(game_menu=act(close_panel), K_ESCAPE=act(close_panel))
         # a tap outside the panel closes it; a tap on the panel itself (between its buttons) does nothing
-        dim = Solid("#00000066" if big else "#00000030")
+        t = transp() / 100.0
+        dim = rgba("#000000", (0.4 if big else 0.19) * (1 - t))
         ui.button(clicked=act(close_panel), xpos=0, ypos=0, xanchor=0, yanchor=0, xminimum=sw, xmaximum=sw,
                   yminimum=sh, ymaximum=sh, background=dim, hover_background=dim, xpadding=0, ypadding=0,
                   xmargin=0, ymargin=0, foreground=None, hover_foreground=None)
         ui.null()
         W = big_w() if big else small_w()
         pad = px(0.55)
-        box = Solid("#151a2cf4")
+        box = rgba("#151a2c", 0.96 * (1 - t))
         kw = dict(clicked=noop, xminimum=W, xmaximum=W, background=box, hover_background=box, xpadding=pad,
-                  ypadding=pad, xmargin=0, ymargin=0, foreground=None, hover_foreground=None)
+                  ypadding=pad, xmargin=0, ymargin=0, foreground=None, hover_foreground=None, **FREE_H)
         if big:
             kw.update(xalign=0.5, yalign=0.5)
         else:
@@ -12080,6 +12881,69 @@ def _rut_live_setup():
                 return True
         return False
 
+    st.shift = (0, 0)
+
+    def scr_name(f):
+        n = getattr(getattr(f, "screen", None), "screen_name", None)
+        if isinstance(n, tuple):
+            n = n[0] if n else None
+        return n if isinstance(n, STR_TS) else u""
+
+    def corner_shift(xa, ya):
+        # buttons of the game in our corner (a quick menu at the bottom right, the main menu): our buttons
+        # move up (or down) or sideways - whichever is the shorter way to a free place. Sizes are those of
+        # the last frame drawn.
+        foc = getattr(R.display, "focus", None)
+        if foc is None:
+            return st.shift
+        try:
+            fl = list(getattr(foc, "focus_list", None) or ())
+            sw, sh = C.screen_width, C.screen_height
+            mine, rects = [], []
+            for f in fl:
+                if None in (f.x, f.y, f.w, f.h):
+                    continue
+                n = scr_name(f)
+                if n == u"rut_live_button":
+                    mine.append(f)
+                elif not n.startswith(u"rut_live") and f.w <= sw * 0.7 and f.h <= sh * 0.25:
+                    rects.append((f.x, f.y, f.x + f.w, f.y + f.h))
+            if not mine:
+                return st.shift
+            w = max(f.x + f.w for f in mine) - min(f.x for f in mine)
+            h = max(f.y + f.h for f in mine) - min(f.y for f in mine)
+            right, bottom = xa > 0.5, ya > 0.5
+
+            def place(dx, dy):
+                x0 = sw - w - dx if right else dx
+                y0 = sh - h - dy if bottom else dy
+                return [r for r in rects if r[0] < x0 + w and r[2] > x0 and r[1] < y0 + h and r[3] > y0]
+
+            def way(vertical, limit):
+                d = 0
+                for _i in range(30):
+                    hs = place(0, d) if vertical else place(d, 0)
+                    if not hs:
+                        return d
+                    if vertical:
+                        d = sh - min(r[1] for r in hs) if bottom else max(r[3] for r in hs)
+                    else:
+                        d = sw - min(r[0] for r in hs) if right else max(r[2] for r in hs)
+                    if d > limit:
+                        return None
+                return None
+            dy, dx = way(True, sh * 0.35), way(False, sw * 0.5)
+            if dy is None and dx is None:
+                st.shift = (0, 0)
+            elif dx is None or (dy is not None and dy <= dx):
+                st.shift = (0, int(dy))
+            else:
+                st.shift = (int(dx), 0)
+        except Exception as e:
+            err_once("shift", e)
+            st.shift = (0, 0)
+        return st.shift
+
     def corner_bar(items):
         # [(label, function, globe icon, warning colour)]; the language button stays in the very corner.
         # Around each small visible button there is a bigger invisible area: easier to hit with a finger.
@@ -12087,12 +12951,14 @@ def _rut_live_setup():
         m = px(0.4) if TOUCH else 0
         if xa > 0.5:
             items = list(reversed(items))
-        ui.hbox(xalign=xa, yalign=ya, spacing=0 if TOUCH else px(0.12))
+        dx, dy = corner_shift(xa, ya)
+        ui.hbox(xalign=xa, yalign=ya, xoffset=-dx if xa > 0.5 else dx, yoffset=-dy if ya > 0.5 else dy,
+                spacing=0 if TOUCH else px(0.12))
         for label, fn, with_icon, warn in items:
             ui.button(clicked=fn, background=None, hover_background=None, xpadding=m, ypadding=m, xmargin=0,
-                      ymargin=0, foreground=None, hover_foreground=None)
+                      ymargin=0, foreground=None, hover_foreground=None, xminimum=0, xmaximum=None, **FREE_H)
             ui.frame(background=Solid("#b8650cd8" if warn else "#00000078"), hover_background=Solid("#3a5ad0d8"),
-                     xpadding=px(0.3), ypadding=px(0.12), xmargin=0, ymargin=0)
+                     xpadding=px(0.3), ypadding=px(0.12), xmargin=0, ymargin=0, xminimum=0, xmaximum=None, **FREE_H)
             ui.hbox(spacing=px(0.15))
             if with_icon:
                 add_icon(int(sz(0.62)))
@@ -12143,6 +13009,13 @@ def _rut_live_setup():
             st.prefs["hide_game"] = True
     except Exception:
         st.prefs["corner"] = 0
+    if "pos" not in st.prefs:
+        try:
+            c = int(st.prefs.get("corner", 0) or 0)
+        except Exception:
+            c = 0
+        if 0 < c < 4:
+            st.prefs["pos"] = c  # chosen by the player; "top right" was the old default -> now bottom right
     st.sys_lang = system_lang()
     lang = st.prefs.get("lang")  # chosen by the player before
     if not lang:
@@ -12255,10 +13128,13 @@ RPY_LIVE_UI = {
     "bad_code": "Не понял код языка (примеры: hy, ka, he)", "choose_lang": "Язык перевода", "choose_lang_btn": "Выбрать язык перевода…",
     "own_code": "Свой код языка…", "code_hint": "Код или название языка, например: hy, ka, he",
     "ok": "OK", "fix_title": "Какую фразу исправить? (с экрана и последние реплики)",
-    "fix_none": "На экране нет переведённого текста",
+    "fix_none": "На экране нет текста для перевода",
     "fix_one": "Исправить перевод", "original_txt": "Оригинал:", "translation_txt": "Перевод:",
     "marks_hint": "‹n› — ссылки, выделение и числа: оставьте все метки", "save": "Сохранить",
     "google_back": "Вернуть перевод Google", "cancel": "Отмена",
+    "transp": "Прозрачность фона панели", "reload": "Перезагрузить сцену",
+    "reload_hint": "Чёрный экран или игра не идёт дальше: сохранит и сразу загрузит игру",
+    "reload_fail": "Здесь перезагрузить нельзя: сохраните и загрузите игру вручную",
 }
 # Значок «глобус» для кнопки в углу (PNG 64×64, белый с прозрачностью), base64
 RPY_LIVE_ICON = (
@@ -12529,7 +13405,7 @@ def run_renpy_live(args, g, engine, key, glossary):
         payload = {"v": 2, "mode": "live", "src": args.src, "lang": lang or "auto",
                    "cfg": {"server": server, "wait": args.live_wait}, "ui": {"ru": RPY_LIVE_UI},
                    "langs": rpy_live_langs(), "fav": RPY_LIVE_FAV, "icon": RPY_LIVE_ICON, "dicts": dicts, "live": live,
-                   "manual": manual, "built": int(time.time())}
+                   "manual": manual, "dbl": DOUBLES, "built": int(time.time())}
         files = rpy_live_write(g, payload, tpl)
         for p in files:
             print(f"  записан: {p}", file=sys.stderr)
@@ -12539,9 +13415,10 @@ def run_renpy_live(args, g, engine, key, glossary):
 
     keys = ("Язык игра берёт сама — как у телефона / Windows (если это не язык оригинала); выбранный в игре\n"
             "  запоминается." if not lang else f"Язык по умолчанию: {lang}.") + (
-            "\n  В игре: в правом верхнем углу кнопка с глобусом (на ПК ещё Alt+L) — язык,\n"
+            "\n  В игре: в правом нижнем углу кнопка с глобусом (на ПК ещё Alt+L) — язык,\n"
             "  «Перевести заново», «Исправить фразу»; рядом «⟳» — обновить перевод. В «Ещё…» — место кнопки,\n"
-            "  рендерер и консоль Ren'Py. Alt+T — оригинал/перевод.")
+            "  прозрачность панели, «Перезагрузить сцену» (чёрный экран), рендерер и консоль Ren'Py.\n"
+            "  Alt+T — оригинал/перевод.")
     if not console:
         install("")
         print("\nГотово: перевод на лету встроен в игру. Запускайте её как обычно"
@@ -12549,7 +13426,7 @@ def run_renpy_live(args, g, engine, key, glossary):
               + f"\n  {keys}\n"
               "  Новый текст игра переводит через Google сама (нужен интернет) и запоминает — в папке сохранений\n"
               "  игры, файл rut_live.json. Его же можно добавить в игру на ПК (переводы встроятся):\n"
-              f"      python sugarcube_translate.py \"{args.input}\" -i rut_live.json\n"
+              f"      python {PROG_CMD} \"{args.input}\" -i rut_live.json\n"
               "  Вернуть оригинал: тот же запуск с --remove.", file=sys.stderr)
         return 0
     if engine in ("free", "google"):
@@ -14199,7 +15076,8 @@ def watch_exit():
 
 def main():
     ap = argparse.ArgumentParser(
-        prog="sugarcube_translate.py", description=HELP_INTRO, epilog=HELP_EXAMPLES,
+        prog=PROG, description=HELP_INTRO.replace("sugarcube_translate.py", PROG_CMD),
+        epilog=HELP_EXAMPLES.replace("sugarcube_translate.py", PROG_CMD),
         formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(prog, max_help_position=30, width=100),
         add_help=False)
     g = ap.add_argument_group("Основное")
@@ -14317,7 +15195,8 @@ def main():
     g.add_argument("--reuse-cache", action="store_true", help=argparse.SUPPRESS)  # кэш старой версии — без вопроса
 
     if len(sys.argv) == 1:
-        print(HELP_INTRO.strip() + "\n\nСправка по всем возможностям:  python sugarcube_translate.py -h",
+        print(HELP_INTRO.replace("sugarcube_translate.py", PROG_CMD).strip()
+              + f"\n\nСправка по всем возможностям:  python {PROG_CMD} -h",
               file=sys.stderr)
         return
     argv = []
@@ -14365,7 +15244,7 @@ def main():
     CONF["context"] = not args.no_context
     CONF["dst"] = args.dst or "ru"
     if not args.input and not args.check:
-        ap.error("укажите игру, например: python sugarcube_translate.py \"Моя игра.html\"")
+        ap.error(f"укажите игру, например: python {PROG_CMD} \"Моя игра.html\"")
 
     modes = ["safe", "full"] if args.mode == "both" else [args.mode]
     OPTS.js, OPTS.gender = not args.no_js, not args.no_gender
@@ -14421,7 +15300,8 @@ def main():
                          "Переводите ОРИГИНАЛЬНЫЙ английский файл: старые переводы возьмутся из кэша, а новые "
                          "исправления (связность фраз, «is», род) сработают только на оригинале.\n"
                          "Если всё же нужно — добавьте --force.")
-    letters = "".join(p["body"] for p in game.passages if "script" not in p["tags"])[:3_000_000]
+    letters = "".join(p["body"] for p in game.passages
+                      if "script" not in p["tags"] and not p["tags"] & MEDIA_TAGS)[:3_000_000]
     n_lat, n_cyr = len(re.findall(r"[A-Za-z]", letters)), len(re.findall(r"[А-Яа-яЁёІіЇїЄє]", letters))
     if n_cyr > 0.3 * (n_lat + n_cyr) and not args.force:
         print("Внимание: в игре уже много кириллицы — похоже, файл уже переведён. Лучше переводить оригинал.",
@@ -14432,8 +15312,8 @@ def main():
             raise SystemExit(f"Это игра не на SugarCube ({'HTML/JavaScript' if fmt == 'web' else fmt}): её текст собирается "
                              "другим движком, заранее его не перевести без поломок.\nДля неё есть перевод на лету — "
                              "переводится то, что видно на экране:\n"
-                             f"  python sugarcube_translate.py \"{args.input}\" -l   (файл, который работает сам)\n"
-                             f"  python sugarcube_translate.py \"{args.input}\" -c   (через окно скрипта)")
+                             f"  python {PROG_CMD} \"{args.input}\" -l   (файл, который работает сам)\n"
+                             f"  python {PROG_CMD} \"{args.input}\" -c   (через окно скрипта)")
         raise SystemExit(f"Формат игры: {fmt}. Скрипт рассчитан на SugarCube; другие форматы (Harlowe и т.д.) "
                          f"используют другую разметку. Если всё равно хотите попробовать — добавьте --force.")
     passages = game.passages
@@ -14580,8 +15460,8 @@ def main():
         print(f"Значения переменных для показа (white → белый и т.п.): {len(values):,}; ещё не переведено "
               f"{len(left):,} ({chars(left):,} символов; без них: --no-values)", file=sys.stderr)
     if tr.redo:
-        print(f"В кэше {tr.redo:,} фраз, которые переводчик раньше вернул без перевода, — переведу их заново.",
-              file=sys.stderr)
+        print(f"В кэше {tr.redo:,} фраз, которые переводчик раньше вернул без перевода (или наполовину), "
+              "— переведу их заново.", file=sys.stderr)
     allreq = list(dict.fromkeys(r for m in modes for r in per_mode[m]))
     if allreq:
         done_n = sum(1 for r in allreq if tr.has(r))
@@ -14644,7 +15524,7 @@ def main():
         if done_n == 0:
             print("Пока не переведено ни одной фразы, поэтому файлы игры не создаю. Что делать: "
                   "подождите несколько часов и запустите снова; проверить доступ можно командой "
-                  "python sugarcube_translate.py --check", file=sys.stderr)
+                  f"python {PROG_CMD} --check", file=sys.stderr)
             return
         print(f"Переведено {partial:.0%} фраз. Соберу игру с тем, что есть (остальное — на английском). "
               f"Запустите ту же команду позже — продолжится с этого места.", file=sys.stderr)
