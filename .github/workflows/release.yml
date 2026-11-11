@@ -1,0 +1,48 @@
+name: Release
+
+# Публикует релиз для новой версии скрипта: как только в main появляется
+# RUT-vX.Y.Z.py, для которого ещё нет релиза, создаётся тег vX.Y.Z и релиз
+# с файлом скрипта и описанием из CHANGELOG.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "RUT-v*.py"
+      - "CHANGELOG.md"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          script=$(ls RUT-v*.py | sort -V | tail -n 1)
+          version=${script#RUT-v}
+          version=${version%.py}
+          tag="v$version"
+
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "Релиз $tag уже есть — ничего не делаю."
+            exit 0
+          fi
+
+          # раздел «## vX.Y.Z» из CHANGELOG.md — до следующего заголовка
+          awk -v h="## $tag" '$0 == h {on = 1; next} /^## / {on = 0} on' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "Версия $version." > notes.md
+          fi
+
+          gh release create "$tag" "$script" \
+            --title "RUT $tag" \
+            --notes-file notes.md \
+            --target "$GITHUB_SHA"
