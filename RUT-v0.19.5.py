@@ -3150,16 +3150,26 @@ def _plain_run(ws):
                                 and not _INTERJ_RE.search(w.lower())) >= 2
 
 
+_TECH = re.compile(r"://|[@/\\_]|\w\.\w")
+
+
+def _no_tech(s):
+    """Без меток, тегов и «технических» слов: ссылки, почта, имена файлов (patreon.com/name, game/saves,
+    give_money) остаются в переводе как есть нарочно. По словам, а не одним выражением: в строках бывают
+    сотни килобайт без пробелов (base64)."""
+    return " ".join(t for t in _HTML_BITS.sub(" ", PH_IN.sub(" ", s)).split() if not _TECH.search(t))
+
+
 def leftover_words(src, res):
     """Сколько слов оригинала осталось в переводе как есть: Google иногда оставляет по-английски
     предложение из длинной фразы («Тьфу… Продолжай пускать слюни. But if you want another round…»).
     Перевод другой письменностью — подряд идущие (от 3) слова оригинала; латиницей — самый длинный
     отрезок тех же слов в том же порядке (от 5). Возвращает (сколько осталось, сколько слов в оригинале)."""
-    so = _LATW.findall(_HTML_BITS.sub(" ", PH_IN.sub(" ", src)))
+    so = _LATW.findall(_no_tech(src))
     sw = [w.lower() for w in so]
     if len(sw) < 4:
         return 0, len(sw)
-    rp = _HTML_BITS.sub(" ", PH_IN.sub(" ", res))
+    rp = _no_tech(res)
     sset = set(sw)
     if _NONLAT_RUN.search(rp):
         n = 0
@@ -3241,6 +3251,7 @@ class Translator:
         self.offline, self.stop_reason = False, ""
         self.rate_hits = self.waited = self.ok_streak = 0
         self.cache = {}
+        self.half = {}  # переведённое наполовину: переспросим, а не выйдет (нет сети, лимит) — оставим как было
         if os.path.exists(cache_path):
             with open(cache_path, encoding="utf-8") as f:
                 self.cache = json.load(f)
@@ -3252,6 +3263,8 @@ class Translator:
                    and k not in man and untranslated(k, v, dst)
                    and (SAME_MARK + k not in self.cache or part_left(k, v))]
             for k in bad:
+                if part_left(k, self.cache[k]):
+                    self.half[k] = self.cache[k]
                 del self.cache[k]
                 self.cache.pop(SAME_MARK + k, None)
             self.redo = len(bad)
@@ -3289,7 +3302,7 @@ class Translator:
             bak = self.cache_path + time.strftime(".bak-%Y%m%d-%H%M%S")
             os.replace(self.cache_path, bak)
             print(f"Старый кэш сохранён как {bak}", file=sys.stderr)
-        self.cache, self.cache_old, self.redo = {}, False, 0
+        self.cache, self.cache_old, self.redo, self.half = {}, False, 0, {}
 
     def save(self, force=False):
         if not self.cache_path:
@@ -3298,6 +3311,8 @@ class Translator:
             if not (force or time.time() - self.last_save > 30):
                 return
             data = {k: (dict(v) if isinstance(v, dict) else v) for k, v in self.cache.items()}
+            for k, v in self.half.items():  # ещё не переспрошенное в этом запуске не теряем
+                data.setdefault(k, v)
             if not os.path.exists(self.cache_path) and not any(not k.startswith("\u0001") for k in data):
                 return  # переводов ещё нет — пустой файл кэша не создаём
             if not self.cache_old:
@@ -3322,7 +3337,7 @@ class Translator:
         """Перевод строки или None, если перевести сейчас нельзя (лимит/блокировка)."""
         if s in self.glossary:
             return self.glossary[s]
-        if s not in self.cache and not self.offline:
+        if s not in self.cache:
             self.prefetch([s], quiet=True)
         return self.cache.get(s)
 
@@ -3796,6 +3811,17 @@ class Translator:
             self.save(force=True)
 
     def prefetch(self, strings, quiet=False):
+        strings = list(strings)
+        try:
+            return self._prefetch_do(strings, quiet)
+        finally:
+            with self.lock:  # переведённое наполовину переспросить не вышло — остаётся прежний перевод
+                for s in strings:
+                    old = self.half.pop(s, None) if self.half else None
+                    if old is not None and s not in self.cache:
+                        self.cache[s] = old
+
+    def _prefetch_do(self, strings, quiet=False):
         todo = [s for s in dict.fromkeys(strings) if not self.has(s)]
         if not todo or self.offline:
             return
@@ -9822,6 +9848,10 @@ def _rut_live_setup():
         if isinstance(ks, list):
             st.manual[l] = set(ks)
             st.emb_manual[l] = set(ks)
+    st.reask = {}  # half-translated last time: shown as they are, asked again when they come up
+    for l, ks in (DATA.get("reask") or {}).items():
+        if isinstance(ks, list):
+            st.reask[l] = set(ks)
     st.langs = [x for x in (DATA.get("langs") or []) if isinstance(x, list) and len(x) >= 2]
     st.fav = [x for x in (DATA.get("fav") or []) if isinstance(x, T_TEXT)]
     st.user = {}
@@ -9963,12 +9993,16 @@ def _rut_live_setup():
                 if k in emb and k not in dm:
                     continue
                 if k not in dm:
-                    half = half_done(k, v, l)
-                    if half or (k not in ok and ((v == k and same_suspect(k, v, l)) or part_suspect(k, v))):
-                        st.user[l].pop(k, None)  # came back from Google (partly) untranslated: ask again
-                        if half:
-                            ok.discard(k)  # half-translated: every new session (v0.19.2 remembered them)
+                    if half_done(k, v, l):
+                        # half-translated: shown as it is, asked again (once a session) when it comes up -
+                        # the Google failure may have been passing. v0.19.2 remembered such lines for good.
+                        ok.discard(k)
+                        st.reask.setdefault(l, set()).add(k)
+                    elif k not in ok and ((v == k and same_suspect(k, v, l)) or part_suspect(k, v)):
+                        st.user[l].pop(k, None)  # came back from Google untranslated: ask again
                         continue
+                    else:
+                        st.reask.get(l, set()).discard(k)  # translated whole on this device since
                 M[k] = v
         for l, m in (d.get("dicts") or {}).items():
             if isinstance(m, dict):
@@ -10547,6 +10581,11 @@ def _rut_live_setup():
             if v is None:
                 continue
             got_any = True
+            ra = st.reask.get(lang)
+            if ra and req and k in ra:
+                ra.discard(k)
+                if k not in st.manual.get(lang, ()):
+                    request(lang, k, info, 0, True)  # half-translated last time: once more, in the background
             v = stored_fix(lang, k, v)
             r = unmark(v, info, m)
             if r is not None:
@@ -11077,7 +11116,7 @@ def _rut_live_setup():
     class BadLang(Exception):
         pass
 
-    def google_lines(lines, lang, prefer=None):
+    def google_lines(lines, lang, prefer=None, used=None):
         tried, n400, nerr = set(), 0, 0
         while True:
             ep = (pick(tried, prefer) if prefer else None) or pick(tried)
@@ -11088,6 +11127,8 @@ def _rut_live_setup():
             try:
                 out = run_ep(ep, lines, lang)
                 ep_good(ep)
+                if used is not None:
+                    used.append(ep["kind"])  # which kind of address answered
                 return out
             except Exception as e:
                 tried.add(id(ep))
@@ -11237,15 +11278,21 @@ def _rut_live_setup():
                                     and w.lower() not in TITLE_SMALL and w.lower() not in INTERJ
                                     and not INTERJ_RE.search(w.lower())) >= 2
 
+    TECH = re.compile(u"://|[@/\\\\_]|\\w\\.\\w", re.U)
+
+    def no_tech(s):
+        # links, e-mail, file names (patreon.com/name, game/saves, give_money) stay as they are on purpose
+        return u" ".join(t for t in MARK_RE.sub(u" ", s).split() if not TECH.search(t))
+
     def leftover(k, r):
         # words of the original that stayed in the translation as they are: Google now and then leaves a
         # sentence of a long line in English ("Tch... Keep drooling. But if you want another round...").
         # Another script: runs of 3+ words of the original; Latin script: the longest run of the same words.
-        so = LATW.findall(MARK_RE.sub(u" ", k))
+        so = LATW.findall(no_tech(k))
         sw = [w.lower() for w in so]
         if len(sw) < 4:
             return 0, len(sw)
-        rp = MARK_RE.sub(u" ", u(r))
+        rp = no_tech(u(r))
         sset = set(sw)
         if NONLAT_RUN.search(rp):
             n = 0
@@ -11294,9 +11341,10 @@ def _rut_live_setup():
                     if getattr(e, "code", None) != 400:
                         ep_fail(ep, e)
         rest = [i for i in range(len(keys)) if res[i] is None]
+        used = []
         if rest:
             try:
-                out = google_lines([keys[i] for i in rest], lang)
+                out = google_lines([keys[i] for i in rest], lang, None, used)
             except BadLang:
                 st.bad_lang = lang
                 out = [None] * len(rest)
@@ -11334,6 +11382,8 @@ def _rut_live_setup():
             part = part_suspect(k, best)
             if part:
                 ways = list(part_ways)
+                if len(keys) == 1 and used and used[-1] == ways[0][0]:
+                    del ways[0]  # asked alone through this very kind of address a moment ago
             else:
                 ways = [(None, False)] if len(keys) > 1 else []  # a line asked alone already is not asked again
             w = 0
@@ -13253,7 +13303,10 @@ def rpy_live_entries(tr):
     out = {k: v for k, v in tr.cache.items() if isinstance(v, str) and k and k[0] not in "\u0001\u0002\u0003"
            and v.strip() and live_hash(k) in seen}
     out.update({k: v for k, v in tr.glossary.items() if isinstance(v, str)})
-    return out, [k for k in live_manual(tr) if k in out]
+    # переведённое наполовину: игра покажет как есть и сама переспросит (один раз за запуск игры)
+    half = {k: v for k, v in tr.half.items() if k not in out and live_hash(k) in seen}
+    out.update(half)
+    return out, [k for k in live_manual(tr) if k in out], sorted(half)
 
 
 def rpy_static_count(tr):
@@ -13390,22 +13443,24 @@ def run_renpy_live(args, g, engine, key, glossary):
         if state["entries"] is None and any(rpy_static_count(tr) for tr in trs.values()):
             print("Собираю готовый перевод из кэша (игра уже переводилась обычным способом)…", file=sys.stderr)
             state["entries"] = rpy_live_entries_static(g)[0]
-        dicts, live, manual, n_dict, n_live = {}, {}, {}, 0, 0
+        dicts, live, manual, reask, n_dict, n_live = {}, {}, {}, {}, 0, 0
         for l, tr in trs.items():
             table = rpy_live_table(state["entries"] or {}, tr, l)
             if table:
                 dicts[l] = table
                 n_dict += len(table)
-            e, m = rpy_live_entries(tr)
+            e, m, ra = rpy_live_entries(tr)
             if e:
                 live[l] = e
                 n_live += len(e)
             if m:
                 manual[l] = m
+            if ra:
+                reask[l] = ra
         payload = {"v": 2, "mode": "live", "src": args.src, "lang": lang or "auto",
                    "cfg": {"server": server, "wait": args.live_wait}, "ui": {"ru": RPY_LIVE_UI},
                    "langs": rpy_live_langs(), "fav": RPY_LIVE_FAV, "icon": RPY_LIVE_ICON, "dicts": dicts, "live": live,
-                   "manual": manual, "dbl": DOUBLES, "built": int(time.time())}
+                   "manual": manual, "reask": reask, "dbl": DOUBLES, "built": int(time.time())}
         files = rpy_live_write(g, payload, tpl)
         for p in files:
             print(f"  записан: {p}", file=sys.stderr)
