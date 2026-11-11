@@ -7,6 +7,7 @@ SugarCube 2 (Twine) · Ren'Py · Godot 4 · а на лету — любые иг
 
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Version](https://img.shields.io/badge/version-0.19.5-2ea44f)](RUT-v0.19.5.py)
+[![Release](https://img.shields.io/github/v/release/Slavatar2001/RUT?label=release)](https://github.com/Slavatar2001/RUT/releases/latest)
 [![Dependencies](https://img.shields.io/badge/dependencies-requests-informational)](requirements.txt)
 [![Check](https://github.com/Slavatar2001/RUT/actions/workflows/check.yml/badge.svg)](https://github.com/Slavatar2001/RUT/actions/workflows/check.yml)
 <br>
@@ -63,7 +64,8 @@ DeepL / Microsoft / Google Cloud по ключу и соберёт переве�
 1. **Установите Python 3.8 или новее** — [python.org/downloads](https://www.python.org/downloads/).
    В Windows при установке отметьте *Add Python to PATH*.
 
-2. **Скачайте скрипт** — файл [`RUT-v0.19.5.py`](RUT-v0.19.5.py) (или весь репозиторий: *Code → Download ZIP*) —
+2. **Скачайте скрипт** — файл [`RUT-v0.19.5.py`](RUT-v0.19.5.py) со страницы
+   [последнего релиза](https://github.com/Slavatar2001/RUT/releases/latest) (или весь репозиторий: *Code → Download ZIP*) —
    и установите единственную зависимость:
 
    ```bash
